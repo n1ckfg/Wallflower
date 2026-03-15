@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { PictureFrame } from './picture-frame.js';
 
 // Scene setup
 const scene = new THREE.Scene();
@@ -60,7 +61,9 @@ ceiling.rotation.x = Math.PI / 2;
 ceiling.position.y = roomHeight;
 scene.add(ceiling);
 
-// Walls
+// Walls array for raycasting
+const walls = [];
+
 function createWall(width, height, x, y, z, rotationY = 0, material = wallMaterial) {
     const geometry = new THREE.PlaneGeometry(width, height);
     const wall = new THREE.Mesh(geometry, material);
@@ -68,6 +71,7 @@ function createWall(width, height, x, y, z, rotationY = 0, material = wallMateri
     wall.rotation.y = rotationY;
     wall.receiveShadow = true;
     scene.add(wall);
+    walls.push(wall);
     return wall;
 }
 
@@ -147,6 +151,7 @@ cornerWall.position.set(-hallwayWidth / 2, roomHeight / 2, hallwayEndZ + hallway
 cornerWall.rotation.y = Math.PI / 2;
 cornerWall.receiveShadow = true;
 scene.add(cornerWall);
+walls.push(cornerWall);
 
 // Back wall
 createWall(roomWidth, roomHeight, 0, roomHeight / 2, roomDepth / 2, Math.PI);
@@ -209,7 +214,9 @@ updateCameraFromSpherical();
 
 // Mouse controls
 document.addEventListener('mousedown', (event) => {
-    isMouseDown = true;
+    if (event.altKey) {
+        isMouseDown = true;
+    }
 });
 
 document.addEventListener('mouseup', () => {
@@ -251,6 +258,172 @@ document.addEventListener('wheel', (event) => {
     spherical.radius = Math.max(0.5, Math.min(20, spherical.radius));
     updateCameraFromSpherical();
 }, { passive: false });
+
+// Drawing state for PictureFrame creation
+const raycaster = new THREE.Raycaster();
+const drawingPoints = [];
+let isDrawing = false;
+let drawingLine = null;
+let currentWall = null;
+
+const drawingMaterial = new THREE.LineBasicMaterial({
+    color: 0xff6600,
+    linewidth: 2
+});
+
+function getWallIntersection(event) {
+    const mouse = new THREE.Vector2(
+        (event.clientX / window.innerWidth) * 2 - 1,
+        -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(walls);
+    if (intersects.length > 0) {
+        return intersects[0];
+    }
+    return null;
+}
+
+function updateDrawingLine() {
+    if (drawingLine) {
+        scene.remove(drawingLine);
+        drawingLine.geometry.dispose();
+    }
+    if (drawingPoints.length < 2) return;
+
+    const geometry = new THREE.BufferGeometry().setFromPoints(drawingPoints);
+    drawingLine = new THREE.Line(geometry, drawingMaterial);
+    scene.add(drawingLine);
+}
+
+function startDrawing(event) {
+    if (event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return;
+
+    const intersection = getWallIntersection(event);
+    if (intersection) {
+        isDrawing = true;
+        currentWall = intersection.object;
+        drawingPoints.length = 0;
+        // Offset slightly from wall to prevent z-fighting
+        const point = intersection.point.clone().add(intersection.face.normal.multiplyScalar(0.01));
+        drawingPoints.push(point);
+    }
+}
+
+function continueDrawing(event) {
+    if (!isDrawing) return;
+    if (event.altKey || event.shiftKey) {
+        // Cancel drawing if modifier pressed
+        cancelDrawing();
+        return;
+    }
+
+    const intersection = getWallIntersection(event);
+    if (intersection && intersection.object === currentWall) {
+        const point = intersection.point.clone().add(intersection.face.normal.multiplyScalar(0.01));
+        drawingPoints.push(point);
+        updateDrawingLine();
+    }
+}
+
+function cancelDrawing() {
+    isDrawing = false;
+    if (drawingLine) {
+        scene.remove(drawingLine);
+        drawingLine.geometry.dispose();
+        drawingLine = null;
+    }
+    drawingPoints.length = 0;
+    currentWall = null;
+}
+
+function finishDrawing() {
+    if (!isDrawing || drawingPoints.length < 3) {
+        cancelDrawing();
+        return;
+    }
+
+    isDrawing = false;
+
+    // Close the polygon
+    drawingPoints.push(drawingPoints[0].clone());
+    updateDrawingLine();
+
+    // Calculate bounding box in wall's local space
+    const wallWorldMatrix = currentWall.matrixWorld.clone();
+    const wallInverseMatrix = wallWorldMatrix.clone().invert();
+
+    const localPoints = drawingPoints.map(p => p.clone().applyMatrix4(wallInverseMatrix));
+
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+
+    for (const p of localPoints) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+    }
+
+    const width = maxX - minX;
+    const height = maxY - minY;
+    const centerLocal = new THREE.Vector3(
+        (minX + maxX) / 2,
+        (minY + maxY) / 2,
+        0.01 // Slightly in front of wall
+    );
+
+    // Convert center back to world space
+    const centerWorld = centerLocal.applyMatrix4(wallWorldMatrix);
+
+    // Flicker effect then create frame
+    let flickerCount = 0;
+    const flickerInterval = setInterval(() => {
+        if (drawingLine) {
+            drawingLine.visible = !drawingLine.visible;
+        }
+        flickerCount++;
+        if (flickerCount >= 20) { // 2 seconds at ~10 flickers/sec
+            clearInterval(flickerInterval);
+            if (drawingLine) {
+                scene.remove(drawingLine);
+                drawingLine.geometry.dispose();
+                drawingLine = null;
+            }
+
+            // Create PictureFrame
+            const frame = new PictureFrame({
+                width: width,
+                height: height
+            });
+            frame.position.copy(centerWorld);
+            frame.rotation.copy(currentWall.rotation);
+            scene.add(frame);
+
+            drawingPoints.length = 0;
+            currentWall = null;
+        }
+    }, 100);
+}
+
+// Drawing event listeners
+renderer.domElement.addEventListener('mousedown', (event) => {
+    if (event.button === 0 && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        startDrawing(event);
+    }
+});
+
+renderer.domElement.addEventListener('mousemove', (event) => {
+    if (isDrawing) {
+        continueDrawing(event);
+    }
+});
+
+renderer.domElement.addEventListener('mouseup', (event) => {
+    if (event.button === 0 && isDrawing) {
+        finishDrawing();
+    }
+});
 
 // Keyboard input
 document.addEventListener('keydown', (event) => {
