@@ -769,6 +769,173 @@ const infoFolder = gui.addFolder('Info');
 infoFolder.add(guiParams, 'width').name('Width').disable();
 infoFolder.add(guiParams, 'height').name('Height').disable();
 
+// Alignment functions
+function getWallInfo(frame) {
+    // Determine which wall the frame is on based on rotation
+    const rotY = frame.rotation.y;
+    const tolerance = 0.1;
+
+    if (Math.abs(rotY) < tolerance) {
+        // Front wall (north), facing +Z
+        return { axis: 'x', wallCenter: 0, wallSize: roomWidth, wall: 'front' };
+    } else if (Math.abs(rotY - Math.PI) < tolerance || Math.abs(rotY + Math.PI) < tolerance) {
+        // Back wall (south), facing -Z
+        return { axis: 'x', wallCenter: 0, wallSize: roomWidth, wall: 'back' };
+    } else if (Math.abs(rotY - Math.PI / 2) < tolerance) {
+        // Left wall (west), facing +X
+        return { axis: 'z', wallCenter: 0, wallSize: roomDepth, wall: 'left' };
+    } else if (Math.abs(rotY + Math.PI / 2) < tolerance) {
+        // Right wall (east), facing -X
+        return { axis: 'z', wallCenter: 0, wallSize: roomDepth, wall: 'right' };
+    }
+    return null;
+}
+
+function alignHorizontal() {
+    if (selectedFrames.size === 0) return;
+
+    const frames = Array.from(selectedFrames);
+
+    // Save prior positions for undo
+    for (const frame of frames) {
+        frame.savePriorPosition();
+    }
+
+    // Get wall info from first frame
+    const wallInfo = getWallInfo(frames[0]);
+    if (!wallInfo) return;
+
+    const axis = wallInfo.axis; // 'x' or 'z' depending on wall orientation
+
+    if (frames.length === 1) {
+        // Single frame: just center horizontally on wall
+        frames[0].position[axis] = wallInfo.wallCenter;
+    } else {
+        // Multiple frames: align Y positions, distribute along axis, then center
+
+        // 1. Align all frames to average Y (horizontal alignment = same Y)
+        const avgY = frames.reduce((sum, f) => sum + f.position.y, 0) / frames.length;
+        for (const frame of frames) {
+            frame.position.y = avgY;
+        }
+
+        // 2. Sort frames by their position on the axis
+        frames.sort((a, b) => a.position[axis] - b.position[axis]);
+
+        // 3. Calculate total width of all frames
+        const totalFrameWidth = frames.reduce((sum, f) => {
+            return sum + f.pictureWidth + f._frameWidth * 2;
+        }, 0);
+
+        // 4. Calculate even spacing
+        const availableSpace = wallInfo.wallSize * 0.9; // Use 90% of wall
+        const gap = (availableSpace - totalFrameWidth) / (frames.length + 1);
+
+        // 5. Distribute frames evenly
+        let currentPos = wallInfo.wallCenter - availableSpace / 2 + gap;
+        for (const frame of frames) {
+            const frameHalfWidth = (frame.pictureWidth + frame._frameWidth * 2) / 2;
+            frame.position[axis] = currentPos + frameHalfWidth;
+            currentPos += frameHalfWidth * 2 + gap;
+        }
+
+        // 6. Center the group on the wall
+        const groupMin = frames[0].position[axis] - (frames[0].pictureWidth + frames[0]._frameWidth * 2) / 2;
+        const lastFrame = frames[frames.length - 1];
+        const groupMax = lastFrame.position[axis] + (lastFrame.pictureWidth + lastFrame._frameWidth * 2) / 2;
+        const groupCenter = (groupMin + groupMax) / 2;
+        const offset = wallInfo.wallCenter - groupCenter;
+
+        for (const frame of frames) {
+            frame.position[axis] += offset;
+        }
+    }
+
+    updateGUIFromSelection();
+
+    // Restore keyboard focus
+    if (document.activeElement) {
+        document.activeElement.blur();
+    }
+}
+
+function alignVertical() {
+    if (selectedFrames.size === 0) return;
+
+    const frames = Array.from(selectedFrames);
+
+    // Save prior positions for undo
+    for (const frame of frames) {
+        frame.savePriorPosition();
+    }
+
+    // Get wall info from first frame
+    const wallInfo = getWallInfo(frames[0]);
+    if (!wallInfo) return;
+
+    const axis = wallInfo.axis; // 'x' or 'z' depending on wall orientation
+    const wallVerticalCenter = roomHeight / 2;
+
+    if (frames.length === 1) {
+        // Single frame: just center vertically on wall
+        frames[0].position.y = wallVerticalCenter;
+    } else {
+        // Multiple frames: align on axis positions, distribute along Y, then center
+
+        // 1. Align all frames to average axis position (vertical alignment = same X or Z)
+        const avgAxis = frames.reduce((sum, f) => sum + f.position[axis], 0) / frames.length;
+        for (const frame of frames) {
+            frame.position[axis] = avgAxis;
+        }
+
+        // 2. Sort frames by their Y position (top to bottom)
+        frames.sort((a, b) => b.position.y - a.position.y);
+
+        // 3. Calculate total height of all frames
+        const totalFrameHeight = frames.reduce((sum, f) => {
+            return sum + f.pictureHeight + f._frameWidth * 2;
+        }, 0);
+
+        // 4. Calculate even spacing
+        const availableSpace = roomHeight * 0.85; // Use 85% of wall height
+        const gap = (availableSpace - totalFrameHeight) / (frames.length + 1);
+
+        // 5. Distribute frames evenly from top
+        let currentPos = wallVerticalCenter + availableSpace / 2 - gap;
+        for (const frame of frames) {
+            const frameHalfHeight = (frame.pictureHeight + frame._frameWidth * 2) / 2;
+            frame.position.y = currentPos - frameHalfHeight;
+            currentPos -= frameHalfHeight * 2 + gap;
+        }
+
+        // 6. Center the group vertically on the wall
+        const groupMax = frames[0].position.y + (frames[0].pictureHeight + frames[0]._frameWidth * 2) / 2;
+        const lastFrame = frames[frames.length - 1];
+        const groupMin = lastFrame.position.y - (lastFrame.pictureHeight + lastFrame._frameWidth * 2) / 2;
+        const groupCenter = (groupMin + groupMax) / 2;
+        const offset = wallVerticalCenter - groupCenter;
+
+        for (const frame of frames) {
+            frame.position.y += offset;
+        }
+    }
+
+    updateGUIFromSelection();
+
+    // Restore keyboard focus
+    if (document.activeElement) {
+        document.activeElement.blur();
+    }
+}
+
+const alignFolder = gui.addFolder('Align');
+alignFolder.add({ alignHorizontal }, 'alignHorizontal').name('Align Horizontal');
+alignFolder.add({ alignVertical }, 'alignVertical').name('Align Vertical');
+
+const fileFolder = gui.addFolder('File');
+fileFolder.add({ save: saveGallery }, 'save').name('Save Gallery');
+fileFolder.add({ load: openFileDialog }, 'load').name('Load Gallery');
+
 function getFrameIntersection(event) {
     const mouse = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
@@ -1100,6 +1267,18 @@ renderer.domElement.addEventListener('drop', (event) => {
 function saveGallery() {
     const data = {
         version: 1,
+        camera: {
+            target: {
+                x: target.x,
+                y: target.y,
+                z: target.z
+            },
+            spherical: {
+                radius: spherical.radius,
+                phi: spherical.phi,
+                theta: spherical.theta
+            }
+        },
         frames: []
     };
 
@@ -1147,6 +1326,11 @@ function saveGallery() {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+
+    // Restore keyboard focus
+    if (document.activeElement) {
+        document.activeElement.blur();
+    }
 }
 
 function loadGallery(file) {
@@ -1162,6 +1346,23 @@ function loadGallery(file) {
             pictureFrames.length = 0;
             selectedFrames.clear();
             updateGUIFromSelection();
+
+            // Restore camera if saved
+            if (data.camera) {
+                if (data.camera.target) {
+                    target.set(
+                        data.camera.target.x,
+                        data.camera.target.y,
+                        data.camera.target.z
+                    );
+                }
+                if (data.camera.spherical) {
+                    spherical.radius = data.camera.spherical.radius;
+                    spherical.phi = data.camera.spherical.phi;
+                    spherical.theta = data.camera.spherical.theta;
+                }
+                updateCameraFromSpherical();
+            }
 
             // Load frames
             for (const frameData of data.frames) {
@@ -1198,6 +1399,11 @@ function loadGallery(file) {
 
                 scene.add(frame);
                 pictureFrames.push(frame);
+            }
+
+            // Restore keyboard focus
+            if (document.activeElement) {
+                document.activeElement.blur();
             }
         } catch (err) {
             console.error('Error loading gallery:', err);
@@ -1251,11 +1457,16 @@ document.addEventListener('keydown', (event) => {
     // Select all frames
     if ((event.ctrlKey || event.metaKey) && key === 'a') {
         event.preventDefault();
-        for (const frame of pictureFrames) {
-            frame.setSelected(true);
-            selectedFrames.add(frame);
+        // If all frames are already selected, deselect all
+        if (selectedFrames.size === pictureFrames.length && pictureFrames.length > 0) {
+            deselectAll();
+        } else {
+            for (const frame of pictureFrames) {
+                frame.setSelected(true);
+                selectedFrames.add(frame);
+            }
+            updateGUIFromSelection();
         }
-        updateGUIFromSelection();
     }
 
     // Undo position for selected frames
