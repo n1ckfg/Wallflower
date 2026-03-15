@@ -14,6 +14,7 @@ export class PictureFrame extends THREE.Group {
 
         this.pictureWidth = width;
         this.pictureHeight = height;
+        this._frameDepth = frameDepth;
 
         const frameMaterial = new THREE.MeshStandardMaterial({
             color: frameColor,
@@ -33,25 +34,25 @@ export class PictureFrame extends THREE.Group {
 
         // Top frame piece
         const topGeom = new THREE.BoxGeometry(outerWidth, frameWidth, frameDepth);
-        const top = new THREE.Mesh(topGeom, frameMaterial);
-        top.position.set(0, height / 2 + frameWidth / 2, 0);
-        this.add(top);
+        this._topFrame = new THREE.Mesh(topGeom, frameMaterial);
+        this._topFrame.position.set(0, height / 2 + frameWidth / 2, 0);
+        this.add(this._topFrame);
 
         // Bottom frame piece
-        const bottom = new THREE.Mesh(topGeom, frameMaterial);
-        bottom.position.set(0, -height / 2 - frameWidth / 2, 0);
-        this.add(bottom);
+        this._bottomFrame = new THREE.Mesh(topGeom.clone(), frameMaterial);
+        this._bottomFrame.position.set(0, -height / 2 - frameWidth / 2, 0);
+        this.add(this._bottomFrame);
 
         // Left frame piece
         const sideGeom = new THREE.BoxGeometry(frameWidth, height, frameDepth);
-        const left = new THREE.Mesh(sideGeom, frameMaterial);
-        left.position.set(-width / 2 - frameWidth / 2, 0, 0);
-        this.add(left);
+        this._leftFrame = new THREE.Mesh(sideGeom, frameMaterial);
+        this._leftFrame.position.set(-width / 2 - frameWidth / 2, 0, 0);
+        this.add(this._leftFrame);
 
         // Right frame piece
-        const right = new THREE.Mesh(sideGeom, frameMaterial);
-        right.position.set(width / 2 + frameWidth / 2, 0, 0);
-        this.add(right);
+        this._rightFrame = new THREE.Mesh(sideGeom.clone(), frameMaterial);
+        this._rightFrame.position.set(width / 2 + frameWidth / 2, 0, 0);
+        this.add(this._rightFrame);
 
         // Mat/backing
         const matGeom = new THREE.PlaneGeometry(width, height);
@@ -97,6 +98,27 @@ export class PictureFrame extends THREE.Group {
         );
         this._selectionOutline.visible = false;
         this.add(this._selectionOutline);
+
+        // Corner markers for resize
+        this._frameWidth = frameWidth;
+        this._cornerMarkers = [];
+        const cornerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const cornerGeom = new THREE.SphereGeometry(0.03, 8, 8);
+
+        const cornerOffsets = [
+            { x: -width / 2 - frameWidth, y: height / 2 + frameWidth },   // top-left
+            { x: width / 2 + frameWidth, y: height / 2 + frameWidth },    // top-right
+            { x: -width / 2 - frameWidth, y: -height / 2 - frameWidth },  // bottom-left
+            { x: width / 2 + frameWidth, y: -height / 2 - frameWidth }    // bottom-right
+        ];
+
+        for (const offset of cornerOffsets) {
+            const marker = new THREE.Mesh(cornerGeom, cornerMaterial);
+            marker.position.set(offset.x, offset.y, frameDepth / 2 + 0.01);
+            marker.visible = false;
+            this.add(marker);
+            this._cornerMarkers.push(marker);
+        }
     }
 
     setTexture(texture) {
@@ -134,5 +156,89 @@ export class PictureFrame extends THREE.Group {
 
     get hasPriorPosition() {
         return this._priorPosition !== null;
+    }
+
+    getCornerWorldPositions() {
+        const positions = [];
+        for (const marker of this._cornerMarkers) {
+            const worldPos = new THREE.Vector3();
+            marker.getWorldPosition(worldPos);
+            positions.push(worldPos);
+        }
+        return positions;
+    }
+
+    showCornerMarkers(visible) {
+        for (const marker of this._cornerMarkers) {
+            marker.visible = visible;
+        }
+    }
+
+    getCornerIndex(worldPos, threshold = 0.1) {
+        const corners = this.getCornerWorldPositions();
+        for (let i = 0; i < corners.length; i++) {
+            if (corners[i].distanceTo(worldPos) < threshold) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    resize(newWidth, newHeight) {
+        this.pictureWidth = newWidth;
+        this.pictureHeight = newHeight;
+
+        const frameWidth = this._frameWidth;
+        const frameDepth = this._frameDepth;
+        const outerWidth = newWidth + frameWidth * 2;
+        const outerHeight = newHeight + frameWidth * 2;
+
+        // Update top/bottom frame pieces
+        this._topFrame.geometry.dispose();
+        this._topFrame.geometry = new THREE.BoxGeometry(outerWidth, frameWidth, frameDepth);
+        this._topFrame.position.set(0, newHeight / 2 + frameWidth / 2, 0);
+
+        this._bottomFrame.geometry.dispose();
+        this._bottomFrame.geometry = new THREE.BoxGeometry(outerWidth, frameWidth, frameDepth);
+        this._bottomFrame.position.set(0, -newHeight / 2 - frameWidth / 2, 0);
+
+        // Update left/right frame pieces
+        this._leftFrame.geometry.dispose();
+        this._leftFrame.geometry = new THREE.BoxGeometry(frameWidth, newHeight, frameDepth);
+        this._leftFrame.position.set(-newWidth / 2 - frameWidth / 2, 0, 0);
+
+        this._rightFrame.geometry.dispose();
+        this._rightFrame.geometry = new THREE.BoxGeometry(frameWidth, newHeight, frameDepth);
+        this._rightFrame.position.set(newWidth / 2 + frameWidth / 2, 0, 0);
+
+        // Update mat
+        this.mat.geometry.dispose();
+        this.mat.geometry = new THREE.PlaneGeometry(newWidth, newHeight);
+
+        // Update picture
+        this.picture.geometry.dispose();
+        this.picture.geometry = new THREE.PlaneGeometry(newWidth * 0.85, newHeight * 0.85);
+
+        // Update selection outline
+        this._selectionOutline.geometry.dispose();
+        this._selectionOutline.geometry = new THREE.EdgesGeometry(
+            new THREE.BoxGeometry(outerWidth + 0.02, outerHeight + 0.02, frameDepth + 0.02)
+        );
+
+        // Update corner markers
+        const cornerOffsets = [
+            { x: -newWidth / 2 - frameWidth, y: newHeight / 2 + frameWidth },
+            { x: newWidth / 2 + frameWidth, y: newHeight / 2 + frameWidth },
+            { x: -newWidth / 2 - frameWidth, y: -newHeight / 2 - frameWidth },
+            { x: newWidth / 2 + frameWidth, y: -newHeight / 2 - frameWidth }
+        ];
+
+        for (let i = 0; i < this._cornerMarkers.length; i++) {
+            this._cornerMarkers[i].position.set(
+                cornerOffsets[i].x,
+                cornerOffsets[i].y,
+                frameDepth / 2 + 0.01
+            );
+        }
     }
 }

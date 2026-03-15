@@ -139,6 +139,61 @@ let dragStartPositions = new Map();
 let dragStartMousePos = null;
 let constraintAxis = null;
 
+// Resize controls
+let isResizing = false;
+let resizeFrame = null;
+let resizeCornerIndex = -1;
+let resizeStartSize = { width: 0, height: 0 };
+const CORNER_TRIGGER_DISTANCE = 0.1;
+let cornersHighlighted = false;
+
+function getMouseWorldPosition(event) {
+    const mouse = new THREE.Vector2(
+        (event.clientX / window.innerWidth) * 2 - 1,
+        -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(walls);
+    if (intersects.length > 0) {
+        return intersects[0].point;
+    }
+    return null;
+}
+
+function checkCornerProximity(event) {
+    const worldPos = getMouseWorldPosition(event);
+    if (!worldPos) {
+        hideAllCornerMarkers();
+        return null;
+    }
+
+    for (const frame of selectedFrames) {
+        const cornerIndex = frame.getCornerIndex(worldPos, CORNER_TRIGGER_DISTANCE);
+        if (cornerIndex >= 0) {
+            return { frame, cornerIndex };
+        }
+    }
+    return null;
+}
+
+function showAllCornerMarkers() {
+    if (!cornersHighlighted) {
+        for (const frame of selectedFrames) {
+            frame.showCornerMarkers(true);
+        }
+        cornersHighlighted = true;
+    }
+}
+
+function hideAllCornerMarkers() {
+    if (cornersHighlighted) {
+        for (const frame of selectedFrames) {
+            frame.showCornerMarkers(false);
+        }
+        cornersHighlighted = false;
+    }
+}
+
 function snapFrameToNearestWall(frame) {
     // Raycast from room center toward the frame to find the wall it should be on
     const roomCenter = new THREE.Vector3(0, frame.position.y, 0);
@@ -196,6 +251,20 @@ function getFrameUnderMouse(event) {
 }
 
 document.addEventListener('mousedown', (event) => {
+    // Check if clicking near a corner for resize
+    if (cornersHighlighted && selectedFrames.size > 0) {
+        const cornerHit = checkCornerProximity(event);
+        if (cornerHit) {
+            isResizing = true;
+            resizeFrame = cornerHit.frame;
+            resizeCornerIndex = cornerHit.cornerIndex;
+            resizeStartSize = { width: resizeFrame.pictureWidth, height: resizeFrame.pictureHeight };
+            dragStartMousePos = { x: event.clientX, y: event.clientY };
+            resizeFrame.savePriorPosition();
+            return;
+        }
+    }
+
     const hitFrame = getFrameUnderMouse(event);
 
     // Check if clicking on a selected frame
@@ -252,12 +321,56 @@ document.addEventListener('mouseup', () => {
     isMouseDown = false;
     isDraggingFrames = false;
     isDuplicating = false;
+    isResizing = false;
+    resizeFrame = null;
+    resizeCornerIndex = -1;
     dragStartPositions.clear();
     dragStartMousePos = null;
     constraintAxis = null;
 });
 
 document.addEventListener('mousemove', (event) => {
+    // Handle resizing
+    if (isResizing && resizeFrame && dragStartMousePos) {
+        const dx = event.clientX - dragStartMousePos.x;
+        const dy = event.clientY - dragStartMousePos.y;
+
+        const resizeScale = 0.005 * spherical.radius;
+
+        // Determine resize direction based on corner index
+        // 0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right
+        let widthChange = dx * resizeScale;
+        let heightChange = -dy * resizeScale;
+
+        // Adjust signs based on which corner is being dragged
+        if (resizeCornerIndex === 0 || resizeCornerIndex === 2) {
+            widthChange = -widthChange; // Left corners invert width
+        }
+        if (resizeCornerIndex === 2 || resizeCornerIndex === 3) {
+            heightChange = -heightChange; // Bottom corners invert height
+        }
+
+        const newWidth = Math.max(0.1, resizeStartSize.width + widthChange);
+        const newHeight = Math.max(0.1, resizeStartSize.height + heightChange);
+
+        // Resize the frame
+        resizeFrame.resize(newWidth, newHeight);
+
+        // Update the GUI
+        updateGUIFromSelection();
+        return;
+    }
+
+    // Check corner proximity when frames are selected
+    if (selectedFrames.size > 0 && !isDraggingFrames && !isResizing) {
+        const cornerHit = checkCornerProximity(event);
+        if (cornerHit) {
+            showAllCornerMarkers();
+        } else {
+            hideAllCornerMarkers();
+        }
+    }
+
     if (isDraggingFrames && dragStartMousePos) {
         // Calculate movement in screen space
         const dx = event.clientX - dragStartMousePos.x;
@@ -534,6 +647,7 @@ function updateDrawingLine() {
 
 function startDrawing(event) {
     if (event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return;
+    if (selectedFrames.size > 0) return;
 
     const intersection = getWallIntersection(event);
     if (intersection) {
