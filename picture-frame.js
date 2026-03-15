@@ -15,6 +15,8 @@ export class PictureFrame extends THREE.Group {
         this.pictureWidth = width;
         this.pictureHeight = height;
         this._frameDepth = frameDepth;
+        this._imageScale = 1.0;
+        this._imageAspectRatio = null; // Set when texture is applied
 
         const frameMaterial = new THREE.MeshStandardMaterial({
             color: frameColor,
@@ -125,6 +127,50 @@ export class PictureFrame extends THREE.Group {
     setTexture(texture) {
         this.picture.material.map = texture;
         this.picture.material.needsUpdate = true;
+
+        // Store aspect ratio from the texture image
+        if (texture && texture.image) {
+            this._imageAspectRatio = texture.image.width / texture.image.height;
+            this._updatePictureGeometry();
+        }
+    }
+
+    get imageScale() {
+        return this._imageScale;
+    }
+
+    setImageScale(scale) {
+        this._imageScale = Math.max(0.1, Math.min(2.0, scale));
+        this._updatePictureGeometry();
+    }
+
+    _updatePictureGeometry() {
+        const frameDepth = this._frameDepth;
+
+        if (this._imageAspectRatio !== null) {
+            // Calculate picture size based on image aspect ratio and scale
+            // Fit within the frame while maintaining aspect ratio
+            const frameAspect = this.pictureWidth / this.pictureHeight;
+            let picWidth, picHeight;
+
+            if (this._imageAspectRatio > frameAspect) {
+                // Image is wider than frame - fit to width
+                picWidth = this.pictureWidth * 0.85;
+                picHeight = picWidth / this._imageAspectRatio;
+            } else {
+                // Image is taller than frame - fit to height
+                picHeight = this.pictureHeight * 0.85;
+                picWidth = picHeight * this._imageAspectRatio;
+            }
+
+            // Apply scale
+            picWidth *= this._imageScale;
+            picHeight *= this._imageScale;
+
+            this.picture.geometry.dispose();
+            this.picture.geometry = new THREE.PlaneGeometry(picWidth, picHeight);
+            this.picture.position.set(0, 0, frameDepth / 2 + 0.002);
+        }
     }
 
     get selected() {
@@ -217,10 +263,15 @@ export class PictureFrame extends THREE.Group {
         this.mat.geometry = new THREE.PlaneGeometry(newWidth, newHeight);
         this.mat.position.set(0, 0, frameDepth / 2 + 0.001);
 
-        // Update picture
-        this.picture.geometry.dispose();
-        this.picture.geometry = new THREE.PlaneGeometry(newWidth * 0.85, newHeight * 0.85);
-        this.picture.position.set(0, 0, frameDepth / 2 + 0.002);
+        // Update picture - preserve aspect ratio if image is loaded
+        if (this._imageAspectRatio !== null) {
+            this._updatePictureGeometry();
+        } else {
+            // No image loaded, scale picture with frame
+            this.picture.geometry.dispose();
+            this.picture.geometry = new THREE.PlaneGeometry(newWidth * 0.85, newHeight * 0.85);
+            this.picture.position.set(0, 0, frameDepth / 2 + 0.002);
+        }
 
         // Update selection outline
         this._selectionOutline.geometry.dispose();

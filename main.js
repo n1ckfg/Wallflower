@@ -291,6 +291,7 @@ document.addEventListener('mousedown', (event) => {
                     const clonedTexture = frame.picture.material.map.clone();
                     clonedTexture.needsUpdate = true;
                     newFrame.setTexture(clonedTexture);
+                    newFrame.setImageScale(frame.imageScale);
                 }
 
                 scene.add(newFrame);
@@ -524,7 +525,8 @@ const guiParams = {
     width: 1,
     height: 0.75,
     posX: 0,
-    posY: 0
+    posY: 0,
+    imageScale: 100
 };
 
 // Store offsets from center for each frame
@@ -563,6 +565,7 @@ function updateGUIFromSelection() {
     const firstFrame = selectedFrames.values().next().value;
     guiParams.width = firstFrame.pictureWidth;
     guiParams.height = firstFrame.pictureHeight;
+    guiParams.imageScale = firstFrame.imageScale * 100;
 
     // Use center position (X and Y only, Z is wall-constrained)
     guiParams.posX = selectionCenter.x;
@@ -598,6 +601,13 @@ function applyGUIToSelection(property) {
 const posFolder = gui.addFolder('Position');
 posFolder.add(guiParams, 'posX', -10, 10, 0.01).name('X').onChange(() => applyGUIToSelection('posX'));
 posFolder.add(guiParams, 'posY', 0, 10, 0.01).name('Y').onChange(() => applyGUIToSelection('posY'));
+
+const imageFolder = gui.addFolder('Image');
+imageFolder.add(guiParams, 'imageScale', 10, 200, 1).name('Scale %').onChange(() => {
+    for (const frame of selectedFrames) {
+        frame.setImageScale(guiParams.imageScale / 100);
+    }
+});
 
 const infoFolder = gui.addFolder('Info');
 infoFolder.add(guiParams, 'width').name('Width').disable();
@@ -951,7 +961,8 @@ function saveGallery() {
                 y: frame.rotation.y,
                 z: frame.rotation.z
             },
-            texture: null
+            texture: null,
+            imageScale: frame.imageScale
         };
 
         // Convert texture to base64 if exists
@@ -1022,6 +1033,9 @@ function loadGallery(file) {
                         texture.needsUpdate = true;
                         texture.colorSpace = THREE.SRGBColorSpace;
                         frame.setTexture(texture);
+                        if (frameData.imageScale !== undefined) {
+                            frame.setImageScale(frameData.imageScale);
+                        }
                     };
                     img.src = frameData.texture;
                 }
