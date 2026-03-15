@@ -109,7 +109,8 @@ const keys = {
     d: false,
     q: false,
     e: false,
-    shift: false
+    shift: false,
+    control: false
 };
 
 const moveSpeed = 3;
@@ -195,6 +196,11 @@ document.addEventListener('mousedown', (event) => {
                 f.setSelected(true);
                 selectedFrames.add(f);
             }
+        }
+
+        // Save prior positions for undo (before movement starts)
+        for (const frame of selectedFrames) {
+            frame.savePriorPosition();
         }
 
         // Store start positions
@@ -652,6 +658,16 @@ document.addEventListener('keydown', (event) => {
             selectedFrames.add(frame);
         }
     }
+
+    // Undo position for selected frames
+    if ((event.ctrlKey || event.metaKey) && key === 'z') {
+        event.preventDefault();
+        for (const frame of selectedFrames) {
+            if (frame.hasPriorPosition) {
+                frame.restorePriorPosition();
+            }
+        }
+    }
 });
 
 document.addEventListener('keyup', (event) => {
@@ -670,6 +686,9 @@ window.addEventListener('resize', () => {
 
 // Movement update (WASD moves the target/pivot point)
 function updateMovement(delta) {
+    // Disable movement when ctrl is held
+    if (keys.control) return;
+
     // Get camera's forward and right directions (flattened to XZ plane)
     const forward = new THREE.Vector3();
     camera.getWorldDirection(forward);

@@ -84,6 +84,9 @@ export class PictureFrame extends THREE.Group {
         this._originalFrameColor = frameColor;
         this._frameMaterial = frameMaterial;
 
+        // Undo state
+        this._priorPosition = null;
+
         // Selection highlight outline
         const outlineGeom = new THREE.EdgesGeometry(
             new THREE.BoxGeometry(outerWidth + 0.02, outerHeight + 0.02, frameDepth + 0.02)
@@ -115,5 +118,21 @@ export class PictureFrame extends THREE.Group {
             this._frameMaterial.emissive.setHex(0x000000);
             this._frameMaterial.emissiveIntensity = 0;
         }
+    }
+
+    savePriorPosition() {
+        this._priorPosition = this.position.clone();
+    }
+
+    restorePriorPosition() {
+        if (this._priorPosition) {
+            const current = this.position.clone();
+            this.position.copy(this._priorPosition);
+            this._priorPosition = current;
+        }
+    }
+
+    get hasPriorPosition() {
+        return this._priorPosition !== null;
     }
 }
