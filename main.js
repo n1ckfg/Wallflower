@@ -930,6 +930,126 @@ renderer.domElement.addEventListener('drop', (event) => {
     reader.readAsDataURL(file);
 });
 
+// Save/Load gallery functions
+function saveGallery() {
+    const data = {
+        version: 1,
+        frames: []
+    };
+
+    for (const frame of pictureFrames) {
+        const frameData = {
+            width: frame.pictureWidth,
+            height: frame.pictureHeight,
+            position: {
+                x: frame.position.x,
+                y: frame.position.y,
+                z: frame.position.z
+            },
+            rotation: {
+                x: frame.rotation.x,
+                y: frame.rotation.y,
+                z: frame.rotation.z
+            },
+            texture: null
+        };
+
+        // Convert texture to base64 if exists
+        if (frame.picture.material.map) {
+            const canvas = document.createElement('canvas');
+            const image = frame.picture.material.map.image;
+            canvas.width = image.width;
+            canvas.height = image.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(image, 0, 0);
+            frameData.texture = canvas.toDataURL('image/png');
+        }
+
+        data.frames.push(frameData);
+    }
+
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `gallery_${timestamp}.json`;
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function loadGallery(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+
+            // Clear existing frames
+            for (const frame of pictureFrames) {
+                scene.remove(frame);
+            }
+            pictureFrames.length = 0;
+            selectedFrames.clear();
+            updateGUIFromSelection();
+
+            // Load frames
+            for (const frameData of data.frames) {
+                const frame = new PictureFrame({
+                    width: frameData.width,
+                    height: frameData.height
+                });
+
+                frame.position.set(
+                    frameData.position.x,
+                    frameData.position.y,
+                    frameData.position.z
+                );
+                frame.rotation.set(
+                    frameData.rotation.x,
+                    frameData.rotation.y,
+                    frameData.rotation.z
+                );
+
+                // Load texture if exists
+                if (frameData.texture) {
+                    const img = new Image();
+                    img.onload = () => {
+                        const texture = new THREE.Texture(img);
+                        texture.needsUpdate = true;
+                        texture.colorSpace = THREE.SRGBColorSpace;
+                        frame.setTexture(texture);
+                    };
+                    img.src = frameData.texture;
+                }
+
+                scene.add(frame);
+                pictureFrames.push(frame);
+            }
+        } catch (err) {
+            console.error('Error loading gallery:', err);
+            alert('Error loading gallery file');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function openFileDialog() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            loadGallery(file);
+        }
+    };
+    input.click();
+}
+
 // Keyboard input
 document.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
@@ -971,6 +1091,18 @@ document.addEventListener('keydown', (event) => {
                 frame.restorePriorPosition();
             }
         }
+    }
+
+    // Save gallery
+    if ((event.ctrlKey || event.metaKey) && key === 's') {
+        event.preventDefault();
+        saveGallery();
+    }
+
+    // Open gallery
+    if ((event.ctrlKey || event.metaKey) && key === 'o') {
+        event.preventDefault();
+        openFileDialog();
     }
 
     // Arrow key nudging for selected frames
