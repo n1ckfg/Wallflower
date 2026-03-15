@@ -57,7 +57,7 @@ export class PictureFrame extends THREE.Group {
         // Mat/backing
         const matGeom = new THREE.PlaneGeometry(width, height);
         this.mat = new THREE.Mesh(matGeom, matMaterial);
-        this.mat.position.set(0, 0, -frameDepth / 2 + 0.001);
+        this.mat.position.set(0, 0, frameDepth / 2 + 0.001);
         this.add(this.mat);
 
         // Picture plane (for texture)
@@ -69,7 +69,7 @@ export class PictureFrame extends THREE.Group {
             map: texture
         });
         this.picture = new THREE.Mesh(pictureGeom, pictureMaterial);
-        this.picture.position.set(0, 0, -frameDepth / 2 + 0.002);
+        this.picture.position.set(0, 0, frameDepth / 2 + 0.002);
         this.add(this.picture);
 
         // Enable shadows on all meshes
@@ -103,7 +103,7 @@ export class PictureFrame extends THREE.Group {
         this._frameWidth = frameWidth;
         this._cornerMarkers = [];
         const cornerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-        const cornerGeom = new THREE.SphereGeometry(0.03, 8, 8);
+        const cornerGeom = new THREE.SphereGeometry(0.1, 12, 12);
 
         const cornerOffsets = [
             { x: -width / 2 - frameWidth, y: height / 2 + frameWidth },   // top-left
@@ -214,10 +214,12 @@ export class PictureFrame extends THREE.Group {
         // Update mat
         this.mat.geometry.dispose();
         this.mat.geometry = new THREE.PlaneGeometry(newWidth, newHeight);
+        this.mat.position.set(0, 0, frameDepth / 2 + 0.001);
 
         // Update picture
         this.picture.geometry.dispose();
         this.picture.geometry = new THREE.PlaneGeometry(newWidth * 0.85, newHeight * 0.85);
+        this.picture.position.set(0, 0, frameDepth / 2 + 0.002);
 
         // Update selection outline
         this._selectionOutline.geometry.dispose();

@@ -869,6 +869,59 @@ renderer.domElement.addEventListener('mouseup', (event) => {
     }
 });
 
+// Image drag-drop handling
+renderer.domElement.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+});
+
+renderer.domElement.addEventListener('drop', (event) => {
+    event.preventDefault();
+
+    const files = event.dataTransfer.files;
+    if (files.length === 0) return;
+
+    const file = files[0];
+    if (!file.type.startsWith('image/')) return;
+
+    // Find which frame was dropped on
+    const frame = getFrameIntersection(event);
+    if (!frame) return;
+
+    // Load the image
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+            // Create texture from image
+            const texture = new THREE.Texture(img);
+            texture.needsUpdate = true;
+            texture.colorSpace = THREE.SRGBColorSpace;
+
+            // Calculate new frame size preserving area but matching aspect ratio
+            const currentArea = frame.pictureWidth * frame.pictureHeight;
+            const imageAspect = img.width / img.height;
+
+            // area = width * height, aspect = width / height
+            // width = aspect * height, so area = aspect * height^2
+            // height = sqrt(area / aspect)
+            const newHeight = Math.sqrt(currentArea / imageAspect);
+            const newWidth = imageAspect * newHeight;
+
+            // Resize frame and apply texture
+            frame.resize(newWidth, newHeight);
+            frame.setTexture(texture);
+
+            // Update GUI if this frame is selected
+            if (selectedFrames.has(frame)) {
+                updateGUIFromSelection();
+            }
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+});
+
 // Keyboard input
 document.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
