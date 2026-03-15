@@ -273,7 +273,7 @@ document.addEventListener('mousedown', (event) => {
         isDraggingFrames = true;
         isDuplicating = event.altKey;
         dragStartMousePos = { x: event.clientX, y: event.clientY };
-        constraintAxis = event.shiftKey ? null : 'none'; // 'none' means no constraint, null means determine later
+        constraintAxis = null;
 
         if (isDuplicating) {
             // Create duplicates and select them instead
@@ -385,11 +385,15 @@ document.addEventListener('mousemove', (event) => {
         const dx = event.clientX - dragStartMousePos.x;
         const dy = event.clientY - dragStartMousePos.y;
 
-        // Determine constraint axis if shift is held and not yet determined
-        if (event.shiftKey && constraintAxis !== 'none' && constraintAxis !== 'x' && constraintAxis !== 'y') {
+        // Determine constraint axis dynamically when shift is held
+        if (event.shiftKey) {
+            // Determine axis based on dominant movement direction
             if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
                 constraintAxis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
             }
+        } else {
+            // Reset constraint when shift is released
+            constraintAxis = null;
         }
 
         // Convert screen movement to world movement
