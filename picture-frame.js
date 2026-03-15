@@ -88,15 +88,16 @@ export class PictureFrame extends THREE.Group {
         // Undo state
         this._priorPosition = null;
 
-        // Selection highlight outline
+        // Selection highlight outline (renders on top of everything)
         const outlineGeom = new THREE.EdgesGeometry(
             new THREE.BoxGeometry(outerWidth + 0.02, outerHeight + 0.02, frameDepth + 0.02)
         );
         this._selectionOutline = new THREE.LineSegments(
             outlineGeom,
-            new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2 })
+            new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2, depthTest: false })
         );
         this._selectionOutline.visible = false;
+        this._selectionOutline.renderOrder = 999;
         this.add(this._selectionOutline);
 
         // Corner markers for resize

@@ -285,6 +285,14 @@ document.addEventListener('mousedown', (event) => {
                 });
                 newFrame.position.copy(frame.position);
                 newFrame.rotation.copy(frame.rotation);
+
+                // Copy texture if exists (clone to have separate material)
+                if (frame.picture.material.map) {
+                    const clonedTexture = frame.picture.material.map.clone();
+                    clonedTexture.needsUpdate = true;
+                    newFrame.setTexture(clonedTexture);
+                }
+
                 scene.add(newFrame);
                 pictureFrames.push(newFrame);
                 newFrames.push(newFrame);
