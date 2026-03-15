@@ -336,6 +336,7 @@ document.addEventListener('mouseup', () => {
     dragStartPositions.clear();
     dragStartMousePos = null;
     constraintAxis = null;
+    clearAlignmentLines();
 });
 
 document.addEventListener('mousemove', (event) => {
@@ -425,6 +426,9 @@ document.addEventListener('mousemove', (event) => {
                 snapFrameToNearestWall(frame);
             }
         }
+
+        // Update alignment guides
+        updateAlignmentLines();
         return;
     }
 
@@ -481,8 +485,154 @@ const previewMaterial = new THREE.LineBasicMaterial({
 // Picture frame tracking and selection
 const pictureFrames = [];
 const selectedFrames = new Set();
+let lastSelectedFrame = null;
+
+// Alignment guide lines
+const alignmentLineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, depthTest: false });
+const alignmentLines = [];
+const ALIGNMENT_THRESHOLD = 0.02;
+
+function clearAlignmentLines() {
+    for (const line of alignmentLines) {
+        scene.remove(line);
+        line.geometry.dispose();
+    }
+    alignmentLines.length = 0;
+}
+
+function createAlignmentLine(point1, point2) {
+    const geometry = new THREE.BufferGeometry().setFromPoints([point1, point2]);
+    const line = new THREE.Line(geometry, alignmentLineMaterial);
+    line.renderOrder = 1000;
+    scene.add(line);
+    alignmentLines.push(line);
+}
+
+function getFrameEdges(frame) {
+    const fw = frame._frameWidth;
+    const halfW = frame.pictureWidth / 2 + fw;
+    const halfH = frame.pictureHeight / 2 + fw;
+
+    // Get local edge positions
+    const localEdges = {
+        top: new THREE.Vector3(0, halfH, 0),
+        bottom: new THREE.Vector3(0, -halfH, 0),
+        left: new THREE.Vector3(-halfW, 0, 0),
+        right: new THREE.Vector3(halfW, 0, 0)
+    };
+
+    // Convert to world space
+    const worldEdges = {};
+    for (const [name, localPos] of Object.entries(localEdges)) {
+        const worldPos = localPos.clone();
+        frame.localToWorld(worldPos);
+        worldEdges[name] = worldPos;
+    }
+
+    // Also store the edge values for comparison
+    worldEdges.topY = worldEdges.top.y;
+    worldEdges.bottomY = worldEdges.bottom.y;
+    worldEdges.leftX = worldEdges.left.x;
+    worldEdges.rightX = worldEdges.right.x;
+    worldEdges.leftZ = worldEdges.left.z;
+    worldEdges.rightZ = worldEdges.right.z;
+
+    return worldEdges;
+}
+
+function updateAlignmentLines() {
+    clearAlignmentLines();
+
+    if (!isDraggingFrames || !lastSelectedFrame || selectedFrames.has(lastSelectedFrame)) {
+        return;
+    }
+
+    // Check if lastSelectedFrame still exists
+    if (!pictureFrames.includes(lastSelectedFrame)) {
+        lastSelectedFrame = null;
+        return;
+    }
+
+    const refEdges = getFrameEdges(lastSelectedFrame);
+    const refHalfW = lastSelectedFrame.pictureWidth / 2 + lastSelectedFrame._frameWidth;
+    const refHalfH = lastSelectedFrame.pictureHeight / 2 + lastSelectedFrame._frameWidth;
+
+    for (const frame of selectedFrames) {
+        const edges = getFrameEdges(frame);
+        const halfW = frame.pictureWidth / 2 + frame._frameWidth;
+        const halfH = frame.pictureHeight / 2 + frame._frameWidth;
+
+        // Check top-top alignment
+        if (Math.abs(edges.topY - refEdges.topY) < ALIGNMENT_THRESHOLD) {
+            const p1 = new THREE.Vector3(
+                lastSelectedFrame.position.x,
+                refEdges.topY,
+                lastSelectedFrame.position.z + 0.02
+            );
+            const p2 = new THREE.Vector3(
+                frame.position.x,
+                edges.topY,
+                frame.position.z + 0.02
+            );
+            createAlignmentLine(p1, p2);
+        }
+
+        // Check bottom-bottom alignment
+        if (Math.abs(edges.bottomY - refEdges.bottomY) < ALIGNMENT_THRESHOLD) {
+            const p1 = new THREE.Vector3(
+                lastSelectedFrame.position.x,
+                refEdges.bottomY,
+                lastSelectedFrame.position.z + 0.02
+            );
+            const p2 = new THREE.Vector3(
+                frame.position.x,
+                edges.bottomY,
+                frame.position.z + 0.02
+            );
+            createAlignmentLine(p1, p2);
+        }
+
+        // Check left-left alignment (only for frames on same/parallel walls)
+        if (Math.abs(edges.leftX - refEdges.leftX) < ALIGNMENT_THRESHOLD &&
+            Math.abs(edges.leftZ - refEdges.leftZ) < 0.5) {
+            const p1 = new THREE.Vector3(
+                refEdges.leftX,
+                lastSelectedFrame.position.y,
+                lastSelectedFrame.position.z + 0.02
+            );
+            const p2 = new THREE.Vector3(
+                edges.leftX,
+                frame.position.y,
+                frame.position.z + 0.02
+            );
+            createAlignmentLine(p1, p2);
+        }
+
+        // Check right-right alignment
+        if (Math.abs(edges.rightX - refEdges.rightX) < ALIGNMENT_THRESHOLD &&
+            Math.abs(edges.rightZ - refEdges.rightZ) < 0.5) {
+            const p1 = new THREE.Vector3(
+                refEdges.rightX,
+                lastSelectedFrame.position.y,
+                lastSelectedFrame.position.z + 0.02
+            );
+            const p2 = new THREE.Vector3(
+                edges.rightX,
+                frame.position.y,
+                frame.position.z + 0.02
+            );
+            createAlignmentLine(p1, p2);
+        }
+    }
+}
 
 function selectFrame(frame, addToSelection = false) {
+    // Track the last selected frame before changing selection
+    if (selectedFrames.size > 0 && !addToSelection) {
+        // Get the first (or only) currently selected frame as the reference
+        lastSelectedFrame = selectedFrames.values().next().value;
+    }
+
     if (!addToSelection) {
         // Deselect all others
         for (const f of selectedFrames) {
@@ -502,6 +652,7 @@ function deselectFrame(frame) {
         frame.setSelected(false);
         selectedFrames.delete(frame);
     }
+    clearAlignmentLines();
     updateGUIFromSelection();
 }
 
@@ -510,6 +661,7 @@ function deselectAll() {
         f.setSelected(false);
     }
     selectedFrames.clear();
+    clearAlignmentLines();
     updateGUIFromSelection();
 }
 
@@ -1085,8 +1237,13 @@ document.addEventListener('keydown', (event) => {
                 if (index > -1) {
                     pictureFrames.splice(index, 1);
                 }
+                // Clear lastSelectedFrame if it was deleted
+                if (frame === lastSelectedFrame) {
+                    lastSelectedFrame = null;
+                }
             }
             selectedFrames.clear();
+            clearAlignmentLines();
             updateGUIFromSelection();
         }
     }
