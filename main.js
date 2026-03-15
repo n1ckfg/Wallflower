@@ -138,6 +138,38 @@ let dragStartPositions = new Map();
 let dragStartMousePos = null;
 let constraintAxis = null;
 
+function snapFrameToNearestWall(frame) {
+    // Raycast from room center toward the frame to find the wall it should be on
+    const roomCenter = new THREE.Vector3(0, frame.position.y, 0);
+    const direction = new THREE.Vector3().subVectors(frame.position, roomCenter).normalize();
+
+    // If direction is mostly vertical, keep current wall
+    if (Math.abs(direction.y) > 0.9) return;
+
+    const snapRaycaster = new THREE.Raycaster(roomCenter, direction);
+    const intersects = snapRaycaster.intersectObjects(walls);
+
+    if (intersects.length > 0) {
+        const hit = intersects[0];
+        const wall = hit.object;
+
+        // Get wall normal in world space
+        const wallNormal = new THREE.Vector3(0, 0, 1);
+        wallNormal.applyQuaternion(wall.quaternion);
+
+        // Project frame position onto wall plane
+        const wallPos = wall.position.clone();
+        const toFrame = new THREE.Vector3().subVectors(frame.position, wallPos);
+        const distToWall = toFrame.dot(wallNormal);
+
+        // Snap to wall surface (slightly in front)
+        frame.position.sub(wallNormal.clone().multiplyScalar(distToWall - 0.05));
+
+        // Update frame rotation to match wall
+        frame.rotation.copy(wall.rotation);
+    }
+}
+
 function getFrameUnderMouse(event) {
     const mouse = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
@@ -260,6 +292,9 @@ document.addEventListener('mousemove', (event) => {
                 frame.position.copy(startPos);
                 frame.position.add(right.clone().multiplyScalar(worldDx));
                 frame.position.add(up.clone().multiplyScalar(worldDy));
+
+                // Snap to nearest wall if crossing boundaries
+                snapFrameToNearestWall(frame);
             }
         }
         return;
