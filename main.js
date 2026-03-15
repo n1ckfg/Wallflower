@@ -703,6 +703,42 @@ document.addEventListener('keydown', (event) => {
             }
         }
     }
+
+    // Arrow key nudging for selected frames
+    const nudgeStep = event.shiftKey ? 1.0 : 0.1;
+    const arrowKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+
+    if (arrowKeys.includes(event.key) && selectedFrames.size > 0) {
+        event.preventDefault();
+
+        // Get camera's right and up vectors for nudge direction
+        const right = new THREE.Vector3();
+        const up = new THREE.Vector3();
+        camera.matrix.extractBasis(right, up, new THREE.Vector3());
+
+        let nudgeDir = new THREE.Vector3();
+
+        switch (event.key) {
+            case 'ArrowUp':
+                nudgeDir = up.clone().multiplyScalar(nudgeStep);
+                break;
+            case 'ArrowDown':
+                nudgeDir = up.clone().multiplyScalar(-nudgeStep);
+                break;
+            case 'ArrowRight':
+                nudgeDir = right.clone().multiplyScalar(nudgeStep);
+                break;
+            case 'ArrowLeft':
+                nudgeDir = right.clone().multiplyScalar(-nudgeStep);
+                break;
+        }
+
+        for (const frame of selectedFrames) {
+            frame.savePriorPosition();
+            frame.position.add(nudgeDir);
+            snapFrameToNearestWall(frame);
+        }
+    }
 });
 
 document.addEventListener('keyup', (event) => {
