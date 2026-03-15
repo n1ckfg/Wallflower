@@ -131,17 +131,134 @@ function updateCameraFromSpherical() {
 updateCameraFromSpherical();
 
 // Mouse controls
+let isDraggingFrames = false;
+let isDuplicating = false;
+let dragStartPositions = new Map();
+let dragStartMousePos = null;
+let constraintAxis = null;
+
+function getFrameUnderMouse(event) {
+    const mouse = new THREE.Vector2(
+        (event.clientX / window.innerWidth) * 2 - 1,
+        -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+
+    const frameMeshes = [];
+    for (const frame of pictureFrames) {
+        frame.traverse((child) => {
+            if (child.isMesh) {
+                child.userData.parentFrame = frame;
+                frameMeshes.push(child);
+            }
+        });
+    }
+
+    const intersects = raycaster.intersectObjects(frameMeshes);
+    if (intersects.length > 0) {
+        return intersects[0].object.userData.parentFrame;
+    }
+    return null;
+}
+
 document.addEventListener('mousedown', (event) => {
-    if (event.altKey) {
+    const hitFrame = getFrameUnderMouse(event);
+
+    // Check if clicking on a selected frame
+    if (hitFrame && selectedFrames.has(hitFrame)) {
+        // Mouse is over a selected frame - start frame manipulation
+        isDraggingFrames = true;
+        isDuplicating = event.altKey;
+        dragStartMousePos = { x: event.clientX, y: event.clientY };
+        constraintAxis = event.shiftKey ? null : 'none'; // 'none' means no constraint, null means determine later
+
+        if (isDuplicating) {
+            // Create duplicates and select them instead
+            const newFrames = [];
+            for (const frame of selectedFrames) {
+                const newFrame = new PictureFrame({
+                    width: frame.pictureWidth,
+                    height: frame.pictureHeight
+                });
+                newFrame.position.copy(frame.position);
+                newFrame.rotation.copy(frame.rotation);
+                scene.add(newFrame);
+                pictureFrames.push(newFrame);
+                newFrames.push(newFrame);
+            }
+            // Deselect old frames, select new ones
+            for (const f of selectedFrames) {
+                f.setSelected(false);
+            }
+            selectedFrames.clear();
+            for (const f of newFrames) {
+                f.setSelected(true);
+                selectedFrames.add(f);
+            }
+        }
+
+        // Store start positions
+        dragStartPositions.clear();
+        for (const frame of selectedFrames) {
+            dragStartPositions.set(frame, frame.position.clone());
+        }
+    } else if (event.altKey || event.shiftKey) {
+        // No selected frame under mouse, but modifier held - allow navigation
         isMouseDown = true;
     }
 });
 
 document.addEventListener('mouseup', () => {
     isMouseDown = false;
+    isDraggingFrames = false;
+    isDuplicating = false;
+    dragStartPositions.clear();
+    dragStartMousePos = null;
+    constraintAxis = null;
 });
 
 document.addEventListener('mousemove', (event) => {
+    if (isDraggingFrames && dragStartMousePos) {
+        // Calculate movement in screen space
+        const dx = event.clientX - dragStartMousePos.x;
+        const dy = event.clientY - dragStartMousePos.y;
+
+        // Determine constraint axis if shift is held and not yet determined
+        if (event.shiftKey && constraintAxis !== 'none' && constraintAxis !== 'x' && constraintAxis !== 'y') {
+            if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                constraintAxis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+            }
+        }
+
+        // Convert screen movement to world movement
+        const moveScale = 0.01 * spherical.radius;
+        const right = new THREE.Vector3();
+        const up = new THREE.Vector3();
+        camera.matrix.extractBasis(right, up, new THREE.Vector3());
+
+        let worldDx = dx * moveScale;
+        let worldDy = -dy * moveScale;
+
+        // Apply constraint if shift is held and axis is determined
+        if (event.shiftKey && (constraintAxis === 'x' || constraintAxis === 'y')) {
+            if (constraintAxis === 'x') {
+                worldDy = 0;
+            } else {
+                worldDx = 0;
+            }
+        }
+
+        for (const frame of selectedFrames) {
+            const startPos = dragStartPositions.get(frame);
+            if (startPos) {
+                frame.position.copy(startPos);
+                frame.position.add(right.clone().multiplyScalar(worldDx));
+                frame.position.add(up.clone().multiplyScalar(worldDy));
+            }
+        }
+        return;
+    }
+
     if (!isMouseDown) return;
 
     const altKey = event.altKey;
@@ -185,13 +302,11 @@ let drawingLine = null;
 let currentWall = null;
 
 const drawingMaterial = new THREE.LineBasicMaterial({
-    color: 0xff6600,
-    linewidth: 2
+    color: 0xffaa00
 });
 
 const previewMaterial = new THREE.LineBasicMaterial({
-    color: 0x66ccff,
-    linewidth: 2
+    color: 0x00ffff
 });
 
 // Picture frame tracking and selection
@@ -512,6 +627,30 @@ document.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
     if (keys.hasOwnProperty(key)) {
         keys[key] = true;
+    }
+
+    // Delete selected frames
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (selectedFrames.size > 0) {
+            event.preventDefault();
+            for (const frame of selectedFrames) {
+                scene.remove(frame);
+                const index = pictureFrames.indexOf(frame);
+                if (index > -1) {
+                    pictureFrames.splice(index, 1);
+                }
+            }
+            selectedFrames.clear();
+        }
+    }
+
+    // Select all frames
+    if ((event.ctrlKey || event.metaKey) && key === 'a') {
+        event.preventDefault();
+        for (const frame of pictureFrames) {
+            frame.setSelected(true);
+            selectedFrames.add(frame);
+        }
     }
 });
 
