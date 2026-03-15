@@ -407,6 +407,27 @@ const guiParams = {
     posZ: 0
 };
 
+// Store offsets from center for each frame
+const frameOffsets = new Map();
+let selectionCenter = new THREE.Vector3();
+
+function computeSelectionCenter() {
+    selectionCenter.set(0, 0, 0);
+    if (selectedFrames.size === 0) return;
+
+    for (const frame of selectedFrames) {
+        selectionCenter.add(frame.position);
+    }
+    selectionCenter.divideScalar(selectedFrames.size);
+
+    // Store offsets from center
+    frameOffsets.clear();
+    for (const frame of selectedFrames) {
+        const offset = new THREE.Vector3().subVectors(frame.position, selectionCenter);
+        frameOffsets.set(frame, offset);
+    }
+}
+
 function updateGUIFromSelection() {
     if (selectedFrames.size === 0) {
         gui.domElement.style.display = 'none';
@@ -415,36 +436,45 @@ function updateGUIFromSelection() {
 
     gui.domElement.style.display = '';
 
-    // Get values from first selected frame
+    // Compute center of all selected frames
+    computeSelectionCenter();
+
+    // Get size info from first selected frame
     const firstFrame = selectedFrames.values().next().value;
     guiParams.width = firstFrame.pictureWidth;
     guiParams.height = firstFrame.pictureHeight;
-    guiParams.posX = firstFrame.position.x;
-    guiParams.posY = firstFrame.position.y;
-    guiParams.posZ = firstFrame.position.z;
+
+    // Use center position
+    guiParams.posX = selectionCenter.x;
+    guiParams.posY = selectionCenter.y;
+    guiParams.posZ = selectionCenter.z;
 
     gui.controllersRecursive().forEach(c => c.updateDisplay());
 }
 
 function applyGUIToSelection(property) {
+    // Calculate new center position
+    const newCenter = new THREE.Vector3(guiParams.posX, guiParams.posY, guiParams.posZ);
+
     for (const frame of selectedFrames) {
-        switch (property) {
-            case 'posX':
-                frame.savePriorPosition();
-                frame.position.x = guiParams.posX;
-                snapFrameToNearestWall(frame);
-                break;
-            case 'posY':
-                frame.savePriorPosition();
-                frame.position.y = guiParams.posY;
-                break;
-            case 'posZ':
-                frame.savePriorPosition();
-                frame.position.z = guiParams.posZ;
-                snapFrameToNearestWall(frame);
-                break;
+        frame.savePriorPosition();
+
+        // Get this frame's offset from the old center
+        const offset = frameOffsets.get(frame) || new THREE.Vector3();
+
+        // Apply new center plus offset
+        frame.position.copy(newCenter).add(offset);
+
+        if (property === 'posX' || property === 'posZ') {
+            snapFrameToNearestWall(frame);
         }
     }
+
+    // Update center and offsets after snapping
+    computeSelectionCenter();
+    guiParams.posX = selectionCenter.x;
+    guiParams.posY = selectionCenter.y;
+    guiParams.posZ = selectionCenter.z;
 }
 
 const posFolder = gui.addFolder('Position');
