@@ -403,8 +403,7 @@ const guiParams = {
     width: 1,
     height: 0.75,
     posX: 0,
-    posY: 0,
-    posZ: 0
+    posY: 0
 };
 
 // Store offsets from center for each frame
@@ -444,17 +443,16 @@ function updateGUIFromSelection() {
     guiParams.width = firstFrame.pictureWidth;
     guiParams.height = firstFrame.pictureHeight;
 
-    // Use center position
+    // Use center position (X and Y only, Z is wall-constrained)
     guiParams.posX = selectionCenter.x;
     guiParams.posY = selectionCenter.y;
-    guiParams.posZ = selectionCenter.z;
 
     gui.controllersRecursive().forEach(c => c.updateDisplay());
 }
 
 function applyGUIToSelection(property) {
-    // Calculate new center position
-    const newCenter = new THREE.Vector3(guiParams.posX, guiParams.posY, guiParams.posZ);
+    // Calculate new center position (keep Z from current center)
+    const newCenter = new THREE.Vector3(guiParams.posX, guiParams.posY, selectionCenter.z);
 
     for (const frame of selectedFrames) {
         frame.savePriorPosition();
@@ -462,25 +460,23 @@ function applyGUIToSelection(property) {
         // Get this frame's offset from the old center
         const offset = frameOffsets.get(frame) || new THREE.Vector3();
 
-        // Apply new center plus offset
-        frame.position.copy(newCenter).add(offset);
+        // Apply new center plus offset, keeping frame's original Z offset
+        frame.position.x = newCenter.x + offset.x;
+        frame.position.y = newCenter.y + offset.y;
 
-        if (property === 'posX' || property === 'posZ') {
-            snapFrameToNearestWall(frame);
-        }
+        // Snap to wall to maintain wall constraint
+        snapFrameToNearestWall(frame);
     }
 
     // Update center and offsets after snapping
     computeSelectionCenter();
     guiParams.posX = selectionCenter.x;
     guiParams.posY = selectionCenter.y;
-    guiParams.posZ = selectionCenter.z;
 }
 
 const posFolder = gui.addFolder('Position');
 posFolder.add(guiParams, 'posX', -10, 10, 0.01).name('X').onChange(() => applyGUIToSelection('posX'));
 posFolder.add(guiParams, 'posY', 0, 10, 0.01).name('Y').onChange(() => applyGUIToSelection('posY'));
-posFolder.add(guiParams, 'posZ', -10, 10, 0.01).name('Z').onChange(() => applyGUIToSelection('posZ'));
 
 const infoFolder = gui.addFolder('Info');
 infoFolder.add(guiParams, 'width').name('Width').disable();
