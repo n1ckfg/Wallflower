@@ -78,10 +78,42 @@ export class PictureFrame extends THREE.Group {
                 child.receiveShadow = true;
             }
         });
+
+        // Selection state
+        this._selected = false;
+        this._originalFrameColor = frameColor;
+        this._frameMaterial = frameMaterial;
+
+        // Selection highlight outline
+        const outlineGeom = new THREE.EdgesGeometry(
+            new THREE.BoxGeometry(outerWidth + 0.02, outerHeight + 0.02, frameDepth + 0.02)
+        );
+        this._selectionOutline = new THREE.LineSegments(
+            outlineGeom,
+            new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2 })
+        );
+        this._selectionOutline.visible = false;
+        this.add(this._selectionOutline);
     }
 
     setTexture(texture) {
         this.picture.material.map = texture;
         this.picture.material.needsUpdate = true;
+    }
+
+    get selected() {
+        return this._selected;
+    }
+
+    setSelected(selected) {
+        this._selected = selected;
+        this._selectionOutline.visible = selected;
+        if (selected) {
+            this._frameMaterial.emissive.setHex(0x444400);
+            this._frameMaterial.emissiveIntensity = 0.5;
+        } else {
+            this._frameMaterial.emissive.setHex(0x000000);
+            this._frameMaterial.emissiveIntensity = 0;
+        }
     }
 }

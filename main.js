@@ -35,12 +35,6 @@ const wallMaterial = new THREE.MeshStandardMaterial({
     metalness: 0.0
 });
 
-const hallwayWallMaterial = new THREE.MeshStandardMaterial({
-    color: 0xb8b8b4,
-    roughness: 0.9,
-    metalness: 0.0
-});
-
 const ceilingMaterial = new THREE.MeshStandardMaterial({
     color: 0x555555,
     roughness: 0.9,
@@ -75,84 +69,8 @@ function createWall(width, height, x, y, z, rotationY = 0, material = wallMateri
     return wall;
 }
 
-// Door dimensions
-const doorWidth = 1.2;
-const doorHeight = 2.4;
-const hallwayWidth = 2;
-const hallwayLength = roomDepth * 0.25; // 25% of wall length
-
-// Front wall (north) with door opening - split into 3 sections
-// Left section
-const leftWallWidth = (roomWidth - doorWidth) / 2;
-createWall(leftWallWidth, roomHeight, -roomWidth / 2 + leftWallWidth / 2, roomHeight / 2, -roomDepth / 2, 0);
-// Right section
-createWall(leftWallWidth, roomHeight, roomWidth / 2 - leftWallWidth / 2, roomHeight / 2, -roomDepth / 2, 0);
-// Top section (above door)
-const topSectionHeight = roomHeight - doorHeight;
-createWall(doorWidth, topSectionHeight, 0, doorHeight + topSectionHeight / 2, -roomDepth / 2, 0);
-
-// Hallway - extends north then turns right
-const hallwayZ = -roomDepth / 2 - hallwayLength / 2;
-const hallwayEndZ = -roomDepth / 2 - hallwayLength;
-const turnLength = hallwayLength;
-
-// Hallway floor (north section)
-const hallwayFloor = new THREE.Mesh(
-    new THREE.PlaneGeometry(hallwayWidth, hallwayLength),
-    floorMaterial
-);
-hallwayFloor.rotation.x = -Math.PI / 2;
-hallwayFloor.position.set(0, 0, hallwayZ);
-hallwayFloor.receiveShadow = true;
-scene.add(hallwayFloor);
-
-// Hallway ceiling (north section)
-const hallwayCeiling = new THREE.Mesh(
-    new THREE.PlaneGeometry(hallwayWidth, hallwayLength),
-    ceilingMaterial
-);
-hallwayCeiling.rotation.x = Math.PI / 2;
-hallwayCeiling.position.set(0, roomHeight, hallwayZ);
-scene.add(hallwayCeiling);
-
-// Hallway left wall (north section)
-createWall(hallwayLength, roomHeight, -hallwayWidth / 2, roomHeight / 2, hallwayZ, Math.PI / 2, hallwayWallMaterial);
-
-// Turn section (extends right/+X)
-const turnFloor = new THREE.Mesh(
-    new THREE.PlaneGeometry(turnLength, hallwayWidth),
-    floorMaterial
-);
-turnFloor.rotation.x = -Math.PI / 2;
-turnFloor.position.set(hallwayWidth / 2 + turnLength / 2, 0, hallwayEndZ + hallwayWidth / 2);
-turnFloor.receiveShadow = true;
-scene.add(turnFloor);
-
-const turnCeiling = new THREE.Mesh(
-    new THREE.PlaneGeometry(turnLength, hallwayWidth),
-    ceilingMaterial
-);
-turnCeiling.rotation.x = Math.PI / 2;
-turnCeiling.position.set(hallwayWidth / 2 + turnLength / 2, roomHeight, hallwayEndZ + hallwayWidth / 2);
-scene.add(turnCeiling);
-
-// Turn back wall (north wall of turn section)
-createWall(turnLength, roomHeight, hallwayWidth / 2 + turnLength / 2 - 2, roomHeight / 2, hallwayEndZ, 0, hallwayWallMaterial);
-
-// Turn front wall (south wall of turn, closes the corner)
-createWall(turnLength, roomHeight, hallwayWidth / 2 + turnLength / 2, roomHeight / 2, hallwayEndZ + hallwayWidth, Math.PI, hallwayWallMaterial);
-
-// Close off the corner where hallway meets turn (west side of turn)
-const cornerWall = new THREE.Mesh(
-    new THREE.PlaneGeometry(hallwayWidth, roomHeight),
-    hallwayWallMaterial
-);
-cornerWall.position.set(-hallwayWidth / 2, roomHeight / 2, hallwayEndZ + hallwayWidth / 2);
-cornerWall.rotation.y = Math.PI / 2;
-cornerWall.receiveShadow = true;
-scene.add(cornerWall);
-walls.push(cornerWall);
-
+// Front wall (north)
+createWall(roomWidth, roomHeight, 0, roomHeight / 2, -roomDepth / 2, 0);
 // Back wall
 createWall(roomWidth, roomHeight, 0, roomHeight / 2, roomDepth / 2, Math.PI);
 // Left wall
@@ -275,6 +193,71 @@ const previewMaterial = new THREE.LineBasicMaterial({
     color: 0x66ccff,
     linewidth: 2
 });
+
+// Picture frame tracking and selection
+const pictureFrames = [];
+const selectedFrames = new Set();
+
+function selectFrame(frame, addToSelection = false) {
+    if (!addToSelection) {
+        // Deselect all others
+        for (const f of selectedFrames) {
+            f.setSelected(false);
+        }
+        selectedFrames.clear();
+    }
+    if (!selectedFrames.has(frame)) {
+        frame.setSelected(true);
+        selectedFrames.add(frame);
+    }
+}
+
+function deselectFrame(frame) {
+    if (selectedFrames.has(frame)) {
+        frame.setSelected(false);
+        selectedFrames.delete(frame);
+    }
+}
+
+function deselectAll() {
+    for (const f of selectedFrames) {
+        f.setSelected(false);
+    }
+    selectedFrames.clear();
+}
+
+function toggleFrameSelection(frame, addToSelection = false) {
+    if (selectedFrames.has(frame)) {
+        deselectFrame(frame);
+    } else {
+        selectFrame(frame, addToSelection);
+    }
+}
+
+function getFrameIntersection(event) {
+    const mouse = new THREE.Vector2(
+        (event.clientX / window.innerWidth) * 2 - 1,
+        -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+
+    // Get all meshes from picture frames
+    const frameMeshes = [];
+    for (const frame of pictureFrames) {
+        frame.traverse((child) => {
+            if (child.isMesh) {
+                child.userData.parentFrame = frame;
+                frameMeshes.push(child);
+            }
+        });
+    }
+
+    const intersects = raycaster.intersectObjects(frameMeshes);
+    if (intersects.length > 0) {
+        return intersects[0].object.userData.parentFrame;
+    }
+    return null;
+}
 
 function getWallIntersection(event) {
     const mouse = new THREE.Vector2(
@@ -447,6 +430,7 @@ function finishDrawing() {
             frame.position.copy(centerWorld);
             frame.rotation.copy(currentWall.rotation);
             scene.add(frame);
+            pictureFrames.push(frame);
 
             drawingPoints.length = 0;
             currentWall = null;
@@ -454,22 +438,72 @@ function finishDrawing() {
     }, 100);
 }
 
-// Drawing event listeners
+// Drawing and selection event listeners
+let mouseDownPos = null;
+let didDrag = false;
+
 renderer.domElement.addEventListener('mousedown', (event) => {
-    if (event.button === 0 && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
-        startDrawing(event);
+    if (event.button === 0) {
+        mouseDownPos = { x: event.clientX, y: event.clientY };
+        didDrag = false;
+
+        if (!event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+            // Check if clicking on a frame first
+            const frame = getFrameIntersection(event);
+            if (!frame) {
+                startDrawing(event);
+            }
+        }
+    }
+});
+
+renderer.domElement.addEventListener('click', (event) => {
+    if (event.button !== 0 || didDrag) return;
+    if (event.altKey) return; // Alt is for orbit
+
+    const frame = getFrameIntersection(event);
+
+    if (frame) {
+        if (event.ctrlKey || event.metaKey) {
+            // Ctrl-click: remove from selection
+            deselectFrame(frame);
+        } else if (event.shiftKey) {
+            // Shift-click: add to selection
+            selectFrame(frame, true);
+        } else {
+            // Normal click: select (deselect others)
+            selectFrame(frame, false);
+        }
+    } else if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        // Clicked on nothing (not a frame), deselect all
+        // But only if we weren't drawing
+        if (!isDrawing && drawingPoints.length === 0) {
+            deselectAll();
+        }
     }
 });
 
 renderer.domElement.addEventListener('mousemove', (event) => {
+    // Track if we're dragging (moved more than 5 pixels)
+    if (mouseDownPos) {
+        const dx = event.clientX - mouseDownPos.x;
+        const dy = event.clientY - mouseDownPos.y;
+        if (Math.sqrt(dx * dx + dy * dy) > 5) {
+            didDrag = true;
+        }
+    }
+
     if (isDrawing) {
         continueDrawing(event);
     }
 });
 
 renderer.domElement.addEventListener('mouseup', (event) => {
-    if (event.button === 0 && isDrawing) {
-        finishDrawing();
+    if (event.button === 0) {
+        if (isDrawing) {
+            finishDrawing();
+        }
+        mouseDownPos = null;
     }
 });
 
