@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GUI } from 'lil-gui';
 import { PictureFrame } from './picture-frame.js';
 
 // Scene setup
@@ -228,6 +229,7 @@ document.addEventListener('mousedown', (event) => {
                 f.setSelected(true);
                 selectedFrames.add(f);
             }
+            updateGUIFromSelection();
         }
 
         // Save prior positions for undo (before movement starts)
@@ -366,6 +368,7 @@ function selectFrame(frame, addToSelection = false) {
         frame.setSelected(true);
         selectedFrames.add(frame);
     }
+    updateGUIFromSelection();
 }
 
 function deselectFrame(frame) {
@@ -373,6 +376,7 @@ function deselectFrame(frame) {
         frame.setSelected(false);
         selectedFrames.delete(frame);
     }
+    updateGUIFromSelection();
 }
 
 function deselectAll() {
@@ -380,6 +384,7 @@ function deselectAll() {
         f.setSelected(false);
     }
     selectedFrames.clear();
+    updateGUIFromSelection();
 }
 
 function toggleFrameSelection(frame, addToSelection = false) {
@@ -389,6 +394,67 @@ function toggleFrameSelection(frame, addToSelection = false) {
         selectFrame(frame, addToSelection);
     }
 }
+
+// lil-gui setup for selected frames
+const gui = new GUI({ title: 'Picture Frame' });
+gui.domElement.style.display = 'none';
+
+const guiParams = {
+    width: 1,
+    height: 0.75,
+    posX: 0,
+    posY: 0,
+    posZ: 0
+};
+
+function updateGUIFromSelection() {
+    if (selectedFrames.size === 0) {
+        gui.domElement.style.display = 'none';
+        return;
+    }
+
+    gui.domElement.style.display = '';
+
+    // Get values from first selected frame
+    const firstFrame = selectedFrames.values().next().value;
+    guiParams.width = firstFrame.pictureWidth;
+    guiParams.height = firstFrame.pictureHeight;
+    guiParams.posX = firstFrame.position.x;
+    guiParams.posY = firstFrame.position.y;
+    guiParams.posZ = firstFrame.position.z;
+
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+function applyGUIToSelection(property) {
+    for (const frame of selectedFrames) {
+        switch (property) {
+            case 'posX':
+                frame.savePriorPosition();
+                frame.position.x = guiParams.posX;
+                snapFrameToNearestWall(frame);
+                break;
+            case 'posY':
+                frame.savePriorPosition();
+                frame.position.y = guiParams.posY;
+                break;
+            case 'posZ':
+                frame.savePriorPosition();
+                frame.position.z = guiParams.posZ;
+                snapFrameToNearestWall(frame);
+                break;
+        }
+    }
+}
+
+const posFolder = gui.addFolder('Position');
+posFolder.add(guiParams, 'posX', -10, 10, 0.01).name('X').onChange(() => applyGUIToSelection('posX'));
+posFolder.add(guiParams, 'posY', 0, 10, 0.01).name('Y').onChange(() => applyGUIToSelection('posY'));
+posFolder.add(guiParams, 'posZ', -10, 10, 0.01).name('Z').onChange(() => applyGUIToSelection('posZ'));
+
+const infoFolder = gui.addFolder('Info');
+infoFolder.add(guiParams, 'width').name('Width').disable();
+infoFolder.add(guiParams, 'height').name('Height').disable();
 
 function getFrameIntersection(event) {
     const mouse = new THREE.Vector2(
@@ -682,6 +748,7 @@ document.addEventListener('keydown', (event) => {
                 }
             }
             selectedFrames.clear();
+            updateGUIFromSelection();
         }
     }
 
@@ -692,6 +759,7 @@ document.addEventListener('keydown', (event) => {
             frame.setSelected(true);
             selectedFrames.add(frame);
         }
+        updateGUIFromSelection();
     }
 
     // Undo position for selected frames
