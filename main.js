@@ -29,7 +29,13 @@ const floorMaterial = new THREE.MeshStandardMaterial({
 });
 
 const wallMaterial = new THREE.MeshStandardMaterial({
-    color: 0x4a4a4a,
+    color: 0xf5f5f0,
+    roughness: 0.9,
+    metalness: 0.0
+});
+
+const hallwayWallMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb8b8b4,
     roughness: 0.9,
     metalness: 0.0
 });
@@ -55,9 +61,9 @@ ceiling.position.y = roomHeight;
 scene.add(ceiling);
 
 // Walls
-function createWall(width, height, x, y, z, rotationY = 0) {
+function createWall(width, height, x, y, z, rotationY = 0, material = wallMaterial) {
     const geometry = new THREE.PlaneGeometry(width, height);
-    const wall = new THREE.Mesh(geometry, wallMaterial);
+    const wall = new THREE.Mesh(geometry, material);
     wall.position.set(x, y, z);
     wall.rotation.y = rotationY;
     wall.receiveShadow = true;
@@ -65,8 +71,83 @@ function createWall(width, height, x, y, z, rotationY = 0) {
     return wall;
 }
 
-// Front wall
-createWall(roomWidth, roomHeight, 0, roomHeight / 2, -roomDepth / 2, 0);
+// Door dimensions
+const doorWidth = 1.2;
+const doorHeight = 2.4;
+const hallwayWidth = 2;
+const hallwayLength = roomDepth * 0.25; // 25% of wall length
+
+// Front wall (north) with door opening - split into 3 sections
+// Left section
+const leftWallWidth = (roomWidth - doorWidth) / 2;
+createWall(leftWallWidth, roomHeight, -roomWidth / 2 + leftWallWidth / 2, roomHeight / 2, -roomDepth / 2, 0);
+// Right section
+createWall(leftWallWidth, roomHeight, roomWidth / 2 - leftWallWidth / 2, roomHeight / 2, -roomDepth / 2, 0);
+// Top section (above door)
+const topSectionHeight = roomHeight - doorHeight;
+createWall(doorWidth, topSectionHeight, 0, doorHeight + topSectionHeight / 2, -roomDepth / 2, 0);
+
+// Hallway - extends north then turns right
+const hallwayZ = -roomDepth / 2 - hallwayLength / 2;
+const hallwayEndZ = -roomDepth / 2 - hallwayLength;
+const turnLength = hallwayLength;
+
+// Hallway floor (north section)
+const hallwayFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(hallwayWidth, hallwayLength),
+    floorMaterial
+);
+hallwayFloor.rotation.x = -Math.PI / 2;
+hallwayFloor.position.set(0, 0, hallwayZ);
+hallwayFloor.receiveShadow = true;
+scene.add(hallwayFloor);
+
+// Hallway ceiling (north section)
+const hallwayCeiling = new THREE.Mesh(
+    new THREE.PlaneGeometry(hallwayWidth, hallwayLength),
+    ceilingMaterial
+);
+hallwayCeiling.rotation.x = Math.PI / 2;
+hallwayCeiling.position.set(0, roomHeight, hallwayZ);
+scene.add(hallwayCeiling);
+
+// Hallway left wall (north section)
+createWall(hallwayLength, roomHeight, -hallwayWidth / 2, roomHeight / 2, hallwayZ, Math.PI / 2, hallwayWallMaterial);
+
+// Turn section (extends right/+X)
+const turnFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(turnLength, hallwayWidth),
+    floorMaterial
+);
+turnFloor.rotation.x = -Math.PI / 2;
+turnFloor.position.set(hallwayWidth / 2 + turnLength / 2, 0, hallwayEndZ + hallwayWidth / 2);
+turnFloor.receiveShadow = true;
+scene.add(turnFloor);
+
+const turnCeiling = new THREE.Mesh(
+    new THREE.PlaneGeometry(turnLength, hallwayWidth),
+    ceilingMaterial
+);
+turnCeiling.rotation.x = Math.PI / 2;
+turnCeiling.position.set(hallwayWidth / 2 + turnLength / 2, roomHeight, hallwayEndZ + hallwayWidth / 2);
+scene.add(turnCeiling);
+
+// Turn back wall (north wall of turn section)
+createWall(turnLength, roomHeight, hallwayWidth / 2 + turnLength / 2 - 2, roomHeight / 2, hallwayEndZ, 0, hallwayWallMaterial);
+
+// Turn front wall (south wall of turn, closes the corner)
+createWall(turnLength, roomHeight, hallwayWidth / 2 + turnLength / 2, roomHeight / 2, hallwayEndZ + hallwayWidth, Math.PI, hallwayWallMaterial);
+
+// Close off the corner where hallway meets turn (west side of turn)
+const cornerWall = new THREE.Mesh(
+    new THREE.PlaneGeometry(hallwayWidth, roomHeight),
+    hallwayWallMaterial
+);
+cornerWall.position.set(-hallwayWidth / 2, roomHeight / 2, hallwayEndZ + hallwayWidth / 2);
+cornerWall.rotation.y = Math.PI / 2;
+cornerWall.receiveShadow = true;
+scene.add(cornerWall);
+
 // Back wall
 createWall(roomWidth, roomHeight, 0, roomHeight / 2, roomDepth / 2, Math.PI);
 // Left wall
@@ -104,7 +185,8 @@ const keys = {
     s: false,
     d: false,
     q: false,
-    e: false
+    e: false,
+    shift: false
 };
 
 const moveSpeed = 3;
@@ -154,7 +236,7 @@ document.addEventListener('mousemove', (event) => {
         // Orbit
         const orbitSpeed = 0.005;
         spherical.theta -= event.movementX * orbitSpeed;
-        spherical.phi += event.movementY * orbitSpeed;
+        spherical.phi -= event.movementY * orbitSpeed;
 
         // Clamp phi to prevent flipping
         spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
@@ -214,7 +296,8 @@ function updateMovement(delta) {
 
     if (velocity.length() > 0) {
         velocity.normalize();
-        velocity.multiplyScalar(moveSpeed * delta);
+        const speed = keys.shift ? moveSpeed * 2 : moveSpeed;
+        velocity.multiplyScalar(speed * delta);
         target.add(velocity);
         updateCameraFromSpherical();
     }
