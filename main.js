@@ -271,6 +271,11 @@ const drawingMaterial = new THREE.LineBasicMaterial({
     linewidth: 2
 });
 
+const previewMaterial = new THREE.LineBasicMaterial({
+    color: 0x66ccff,
+    linewidth: 2
+});
+
 function getWallIntersection(event) {
     const mouse = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
@@ -374,7 +379,42 @@ function finishDrawing() {
     );
 
     // Convert center back to world space
-    const centerWorld = centerLocal.applyMatrix4(wallWorldMatrix);
+    const centerWorld = centerLocal.clone().applyMatrix4(wallWorldMatrix);
+
+    // Create preview rectangle in local space then transform to world
+    const rectPoints = [
+        new THREE.Vector3(minX, minY, 0.015),
+        new THREE.Vector3(maxX, minY, 0.015),
+        new THREE.Vector3(maxX, maxY, 0.015),
+        new THREE.Vector3(minX, maxY, 0.015),
+        new THREE.Vector3(minX, minY, 0.015)
+    ].map(p => p.applyMatrix4(wallWorldMatrix));
+
+    const rectGeometry = new THREE.BufferGeometry().setFromPoints(rectPoints);
+    const rectLine = new THREE.Line(rectGeometry, previewMaterial);
+    scene.add(rectLine);
+
+    // Create center cross
+    const crossSize = Math.min(width, height) * 0.1;
+    const crossPoints = [
+        // Horizontal line
+        new THREE.Vector3(centerLocal.x - crossSize, centerLocal.y, 0.015),
+        new THREE.Vector3(centerLocal.x + crossSize, centerLocal.y, 0.015),
+    ].map(p => p.applyMatrix4(wallWorldMatrix));
+
+    const crossPoints2 = [
+        // Vertical line
+        new THREE.Vector3(centerLocal.x, centerLocal.y - crossSize, 0.015),
+        new THREE.Vector3(centerLocal.x, centerLocal.y + crossSize, 0.015),
+    ].map(p => p.applyMatrix4(wallWorldMatrix));
+
+    const crossGeometry1 = new THREE.BufferGeometry().setFromPoints(crossPoints);
+    const crossLine1 = new THREE.Line(crossGeometry1, previewMaterial);
+    scene.add(crossLine1);
+
+    const crossGeometry2 = new THREE.BufferGeometry().setFromPoints(crossPoints2);
+    const crossLine2 = new THREE.Line(crossGeometry2, previewMaterial);
+    scene.add(crossLine2);
 
     // Flicker effect then create frame
     let flickerCount = 0;
@@ -390,6 +430,14 @@ function finishDrawing() {
                 drawingLine.geometry.dispose();
                 drawingLine = null;
             }
+
+            // Remove preview lines
+            scene.remove(rectLine);
+            rectGeometry.dispose();
+            scene.remove(crossLine1);
+            crossGeometry1.dispose();
+            scene.remove(crossLine2);
+            crossGeometry2.dispose();
 
             // Create PictureFrame
             const frame = new PictureFrame({
