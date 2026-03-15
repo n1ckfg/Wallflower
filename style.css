@@ -1,0 +1,26 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    overflow: hidden;
+}
+
+canvas {
+    display: block;
+}
+
+#instructions {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    color: #888;
+    font-family: monospace;
+    font-size: 12px;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 10px;
+    border-radius: 4px;
+}
