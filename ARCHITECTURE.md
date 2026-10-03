@@ -1,6 +1,6 @@
 # Architecture: Wallflower
 
-Wallflower is a lightweight 3D gallery builder application running in the browser. It allows users to navigate a 3D space, draw picture frames onto the walls, customize them, drop images into them, and save/load gallery layouts.
+Wallflower is a lightweight 3D gallery builder application running in the browser. It allows users to navigate a 3D space, draw picture frames onto the walls, customize them, drop images into them, draw video projectors onto the floor or ceiling, and save/load gallery layouts.
 
 ## Core Technologies
 
@@ -14,6 +14,7 @@ Wallflower is a lightweight 3D gallery builder application running in the browse
 - `index.html`: The entry point. Sets up the canvas, UI overlay, and defines the ES module import map for dependencies.
 - `main.js`: The core application script containing scene initialization, the render loop, user interaction logic, and state management.
 - `picture-frame.js`: Encapsulates the `PictureFrame` custom class (extending `THREE.Group`), which handles the generation and manipulation of the individual frame 3D models.
+- `video-projector.js`: Encapsulates the `VideoProjector` custom class (extending `THREE.Group`), a physical video projector ported from the `projection_sim` project.
 - `style.css`: Minimal styling to ensure the canvas fills the viewport and UI elements are positioned correctly.
 - `run.bat` / `run.command`: Convenience scripts for Windows and macOS/Linux to find an available port and launch a local web server.
 
@@ -29,16 +30,23 @@ The camera is managed using a hybrid approach:
 
 ### 3. Interaction & Raycasting
 User interactions (clicking, dragging, drawing) rely heavily on Three.js's `Raycaster`.
-- **Drawing Frames**: Clicking and dragging on a wall casts rays against the wall meshes, calculating a bounding box to instantiate a new `PictureFrame`.
-- **Selection & Manipulation**: Rays are cast against the meshes of existing `PictureFrame` instances to select, drag, and resize them. Snapping logic ensures frames remain anchored to walls.
+- **Drawing Frames & Projectors**: Clicking and dragging casts rays against the walls, floor, and ceiling, calculating a bounding box on the hit surface. A stroke on a wall instantiates a new `PictureFrame`; a stroke on the floor or ceiling instantiates a `VideoProjector` at the stroke's center, aimed at the wall the camera is facing.
+- **Selection & Manipulation**: Rays are cast against the meshes of existing `PictureFrame` instances to select, drag, and resize them. Snapping logic ensures frames remain anchored to walls. Projectors are picked via their hardware meshes (not the beam) and are checked before frames. Only one projector is selected at a time, and never together with frames; a selected projector can be dragged or arrow-nudged across the room's XZ plane.
 
 ### 4. Frame Encapsulation (`PictureFrame`)
 The `PictureFrame` class dynamically constructs and updates its geometry based on its width, height, and the aspect ratio of the applied texture. It consists of multiple meshes (top/bottom/side borders, a mat, and the picture plane itself). It also manages selection highlights and corner resize markers.
 
-### 5. Data Serialization (Save/Load)
-The application can export the current state to a JSON file.
-- **Save**: Serializes camera position/target and all frame properties (position, rotation, dimensions). Images are converted to base64 strings via a 2D canvas context and embedded directly in the JSON.
-- **Load**: Parses the JSON, clears the current scene, restores the camera state, instantiates new `PictureFrame` objects, and re-applies the base64 textures.
+### 5. Projector Encapsulation (`VideoProjector`)
+The projector casts its image as real light: a `THREE.SpotLight` whose `.map` is a `THREE.CanvasTexture`, so geometry in the beam (including frames) occludes it and casts shadows.
+- **Video Source**: Each projector owns a 1024x1024 canvas redrawn every frame by `update(t)` (called from the render loop). Content (test pattern, grid, or plasma) is drawn into a 16:9 rectangle; the black surround projects no light, mimicking lens masking.
+- **Assembly**: The group stays upright at the projector head's position. An inner `head` group (housing, lens, light, cosmetic beam cone) pivots via `lookAt()` to face the `aim` point, while a vertical stalk and plate are rescaled each frame to reach the ceiling or floor (`mount` / `surfaceY`). The spotlight target rides on the head's -Z axis, so the optional pan sweep only needs to rotate the head.
+- **Helper**: The `SpotLightHelper` tracks the light's world matrix, so `main.js` adds it to the scene root alongside the projector (`addProjector` / `removeProjector`).
+- **Limits**: Each projector uses two fragment texture units (light map + shadow map), so GPUs with 16 units fit roughly seven projectors.
 
-### 6. Contextual UI
-The `lil-gui` panel is dynamically updated and toggled based on the current selection state. When one or more frames are selected, the panel allows users to adjust position, scaling, and alignment, synchronizing state between the DOM inputs and the 3D scene.
+### 6. Data Serialization (Save/Load)
+The application can export the current state to a JSON file.
+- **Save**: Serializes camera position/target, all frame properties (position, rotation, dimensions), and all projector properties (mount, position, aim, video source, intensity, sweep, beam visibility). Images are converted to base64 strings via a 2D canvas context and embedded directly in the JSON.
+- **Load**: Parses the JSON, clears the current scene, restores the camera state, instantiates new `PictureFrame` and `VideoProjector` objects, and re-applies the base64 textures. Files without a `projectors` array (saved before projectors existed) still load.
+
+### 7. Contextual UI
+Two `lil-gui` panels are dynamically updated and toggled based on the current selection state. When one or more frames are selected, the "Picture Frame" panel allows users to adjust position, scaling, and alignment, synchronizing state between the DOM inputs and the 3D scene. When a projector is selected, the "Projector" panel exposes the `projection_sim` controls (video source, intensity, pan sweep, beam cone, light helper) plus position, aim, and file actions.

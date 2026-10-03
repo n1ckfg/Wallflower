@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GUI } from 'lil-gui';
 import { PictureFrame } from './picture-frame.js';
+import { VideoProjector, VIDEO_SOURCES } from './video-projector.js';
 
 // Scene setup
 const scene = new THREE.Scene();
@@ -55,6 +56,18 @@ const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
 ceiling.rotation.x = Math.PI / 2;
 ceiling.position.y = roomHeight;
 scene.add(ceiling);
+
+// Drawing on these creates a video projector instead of a picture frame
+const projectorSurfaces = [floor, ceiling];
+const CEILING_PROJECTOR_DROP = 0.5; // How far a ceiling-mounted projector hangs below the ceiling
+const FLOOR_PROJECTOR_HEIGHT = 1.2; // Stand height of a floor-mounted projector
+const PROJECTOR_WALL_MARGIN = 0.5; // Closest a projector may get to a wall
+const PROJECTOR_MIN_X = -roomWidth / 2 + PROJECTOR_WALL_MARGIN;
+const PROJECTOR_MAX_X = roomWidth / 2 - PROJECTOR_WALL_MARGIN;
+const PROJECTOR_MIN_Z = -roomDepth / 2 + PROJECTOR_WALL_MARGIN;
+const PROJECTOR_MAX_Z = roomDepth / 2 - PROJECTOR_WALL_MARGIN;
+const PROJECTOR_MIN_Y = 0.3;
+const PROJECTOR_MAX_Y = roomHeight - 0.3;
 
 // Walls array for raycasting
 const walls = [];
@@ -138,6 +151,8 @@ let isDuplicating = false;
 let dragStartPositions = new Map();
 let dragStartMousePos = null;
 let constraintAxis = null;
+let isDraggingProjector = false;
+let projectorDragStartPosition = null;
 
 // Resize controls
 let isResizing = false;
@@ -329,6 +344,8 @@ document.addEventListener('mousedown', (event) => {
 document.addEventListener('mouseup', () => {
     isMouseDown = false;
     isDraggingFrames = false;
+    isDraggingProjector = false;
+    projectorDragStartPosition = null;
     isDuplicating = false;
     isResizing = false;
     resizeFrame = null;
@@ -368,6 +385,22 @@ document.addEventListener('mousemove', (event) => {
 
         // Update the GUI
         updateGUIFromSelection();
+        return;
+    }
+
+    // Handle dragging the selected projector along its floor/ceiling
+    if (isDraggingProjector && selectedProjector && dragStartMousePos) {
+        const dx = event.clientX - dragStartMousePos.x;
+        const dy = event.clientY - dragStartMousePos.y;
+        const moveScale = 0.01 * spherical.radius;
+        const { forward, right } = getCameraGroundAxes();
+
+        selectedProjector.position.copy(projectorDragStartPosition);
+        selectedProjector.position.add(right.multiplyScalar(dx * moveScale));
+        selectedProjector.position.add(forward.multiplyScalar(-dy * moveScale));
+        clampProjectorToRoom(selectedProjector);
+
+        updateProjectorGUI();
         return;
     }
 
@@ -472,7 +505,7 @@ const raycaster = new THREE.Raycaster();
 const drawingPoints = [];
 let isDrawing = false;
 let drawingLine = null;
-let currentWall = null;
+let currentSurface = null; // Wall, floor or ceiling being drawn on
 
 const drawingMaterial = new THREE.LineBasicMaterial({
     color: 0xffaa00
@@ -486,6 +519,73 @@ const previewMaterial = new THREE.LineBasicMaterial({
 const pictureFrames = [];
 const selectedFrames = new Set();
 let lastSelectedFrame = null;
+
+// Video projector tracking and selection (one projector selected at a time,
+// never together with frames)
+const projectors = [];
+let selectedProjector = null;
+
+function addProjector(projector) {
+    scene.add(projector);
+    // SpotLightHelper follows the light's world matrix, so it lives at the scene root
+    scene.add(projector.helper);
+    projectors.push(projector);
+}
+
+function removeProjector(projector) {
+    scene.remove(projector);
+    scene.remove(projector.helper);
+    projector.dispose();
+    const index = projectors.indexOf(projector);
+    if (index > -1) {
+        projectors.splice(index, 1);
+    }
+}
+
+// Camera forward/right flattened onto the XZ plane, for moving things across the floor/ceiling
+function getCameraGroundAxes() {
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y = 0;
+    forward.normalize();
+    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+    return { forward, right };
+}
+
+function clampProjectorToRoom(projector) {
+    projector.position.x = THREE.MathUtils.clamp(projector.position.x, PROJECTOR_MIN_X, PROJECTOR_MAX_X);
+    projector.position.y = THREE.MathUtils.clamp(projector.position.y, PROJECTOR_MIN_Y, PROJECTOR_MAX_Y);
+    projector.position.z = THREE.MathUtils.clamp(projector.position.z, PROJECTOR_MIN_Z, PROJECTOR_MAX_Z);
+}
+
+// Default aim: the wall the camera is facing, at the wall's vertical center
+function getDefaultProjectorAim(from) {
+    const { forward } = getCameraGroundAxes();
+    const origin = new THREE.Vector3(from.x, roomHeight / 2, from.z);
+    const aimRaycaster = new THREE.Raycaster(origin, forward);
+    const intersects = aimRaycaster.intersectObjects(walls);
+    if (intersects.length > 0) {
+        return intersects[0].point;
+    }
+    return origin.add(forward.multiplyScalar(roomDepth / 2));
+}
+
+function createProjectorOnSurface(point, surface) {
+    const mount = surface === ceiling ? 'ceiling' : 'floor';
+    const projector = new VideoProjector({
+        mount: mount,
+        surfaceY: surface.position.y
+    });
+    projector.position.set(
+        point.x,
+        mount === 'ceiling' ? roomHeight - CEILING_PROJECTOR_DROP : FLOOR_PROJECTOR_HEIGHT,
+        point.z
+    );
+    clampProjectorToRoom(projector);
+    projector.aim.copy(getDefaultProjectorAim(projector.position));
+    addProjector(projector);
+    return projector;
+}
 
 // Alignment guide lines
 const alignmentLineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, depthTest: false });
@@ -627,6 +727,9 @@ function updateAlignmentLines() {
 }
 
 function selectFrame(frame, addToSelection = false) {
+    // Frames and projectors are never selected together
+    deselectProjector();
+
     // Track the last selected frame before changing selection
     if (selectedFrames.size > 0 && !addToSelection) {
         // Get the first (or only) currently selected frame as the reference
@@ -663,6 +766,32 @@ function deselectAll() {
     selectedFrames.clear();
     clearAlignmentLines();
     updateGUIFromSelection();
+    deselectProjector();
+}
+
+function selectProjector(projector) {
+    // Frames and projectors are never selected together
+    for (const f of selectedFrames) {
+        f.setSelected(false);
+    }
+    selectedFrames.clear();
+    clearAlignmentLines();
+    updateGUIFromSelection();
+
+    if (selectedProjector && selectedProjector !== projector) {
+        selectedProjector.setSelected(false);
+    }
+    selectedProjector = projector;
+    projector.setSelected(true);
+    updateProjectorGUI();
+}
+
+function deselectProjector() {
+    if (selectedProjector) {
+        selectedProjector.setSelected(false);
+        selectedProjector = null;
+    }
+    updateProjectorGUI();
 }
 
 function toggleFrameSelection(frame, addToSelection = false) {
@@ -936,6 +1065,90 @@ const fileFolder = gui.addFolder('File');
 fileFolder.add({ save: saveGallery }, 'save').name('Save Gallery');
 fileFolder.add({ load: openFileDialog }, 'load').name('Load Gallery');
 
+// lil-gui setup for the selected projector
+const projectorGui = new GUI({ title: 'Projector' });
+projectorGui.domElement.style.display = 'none';
+
+const projectorParams = {
+    content: VIDEO_SOURCES[0],
+    intensity: 150,
+    sweep: false,
+    showBeam: true,
+    helper: false,
+    posX: 0,
+    posZ: 0,
+    height: 0,
+    aimX: 0,
+    aimY: 0,
+    aimZ: 0,
+    mount: ''
+};
+
+function updateProjectorGUI() {
+    if (!selectedProjector) {
+        projectorGui.domElement.style.display = 'none';
+        return;
+    }
+
+    projectorGui.domElement.style.display = '';
+
+    projectorParams.content = selectedProjector.content;
+    projectorParams.intensity = selectedProjector.intensity;
+    projectorParams.sweep = selectedProjector.sweep;
+    projectorParams.showBeam = selectedProjector.showBeam;
+    projectorParams.helper = selectedProjector.showHelper;
+    projectorParams.posX = selectedProjector.position.x;
+    projectorParams.posZ = selectedProjector.position.z;
+    projectorParams.height = selectedProjector.position.y;
+    projectorParams.aimX = selectedProjector.aim.x;
+    projectorParams.aimY = selectedProjector.aim.y;
+    projectorParams.aimZ = selectedProjector.aim.z;
+    projectorParams.mount = selectedProjector.mount;
+
+    projectorGui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+function applyGUIToProjector() {
+    if (!selectedProjector) return;
+    selectedProjector.savePriorPosition();
+    selectedProjector.position.set(projectorParams.posX, projectorParams.height, projectorParams.posZ);
+    clampProjectorToRoom(selectedProjector);
+    selectedProjector.aim.set(projectorParams.aimX, projectorParams.aimY, projectorParams.aimZ);
+}
+
+projectorGui.add(projectorParams, 'content', VIDEO_SOURCES).name('video source').onChange(v => {
+    if (selectedProjector) selectedProjector.content = v;
+});
+projectorGui.add(projectorParams, 'intensity', 0, 800).onChange(v => {
+    if (selectedProjector) selectedProjector.intensity = v;
+});
+projectorGui.add(projectorParams, 'sweep').name('pan projector').onChange(v => {
+    if (selectedProjector) selectedProjector.sweep = v;
+});
+projectorGui.add(projectorParams, 'showBeam').name('show beam cone').onChange(v => {
+    if (selectedProjector) selectedProjector.showBeam = v;
+});
+projectorGui.add(projectorParams, 'helper').name('light helper').onChange(v => {
+    if (selectedProjector) selectedProjector.showHelper = v;
+});
+
+const projectorPosFolder = projectorGui.addFolder('Position');
+projectorPosFolder.add(projectorParams, 'posX', PROJECTOR_MIN_X, PROJECTOR_MAX_X, 0.01).name('X').onChange(applyGUIToProjector);
+projectorPosFolder.add(projectorParams, 'posZ', PROJECTOR_MIN_Z, PROJECTOR_MAX_Z, 0.01).name('Z').onChange(applyGUIToProjector);
+projectorPosFolder.add(projectorParams, 'height', PROJECTOR_MIN_Y, PROJECTOR_MAX_Y, 0.01).name('Height').onChange(applyGUIToProjector);
+
+const projectorAimFolder = projectorGui.addFolder('Aim');
+projectorAimFolder.add(projectorParams, 'aimX', -roomWidth / 2, roomWidth / 2, 0.01).name('X').onChange(applyGUIToProjector);
+projectorAimFolder.add(projectorParams, 'aimY', 0, roomHeight, 0.01).name('Y').onChange(applyGUIToProjector);
+projectorAimFolder.add(projectorParams, 'aimZ', -roomDepth / 2, roomDepth / 2, 0.01).name('Z').onChange(applyGUIToProjector);
+
+const projectorInfoFolder = projectorGui.addFolder('Info');
+projectorInfoFolder.add(projectorParams, 'mount').name('Mount').disable();
+
+const projectorFileFolder = projectorGui.addFolder('File');
+projectorFileFolder.add({ save: saveGallery }, 'save').name('Save Gallery');
+projectorFileFolder.add({ load: openFileDialog }, 'load').name('Load Gallery');
+
 function getFrameIntersection(event) {
     const mouse = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
@@ -961,17 +1174,39 @@ function getFrameIntersection(event) {
     return null;
 }
 
-function getWallIntersection(event) {
+function getProjectorIntersection(event) {
     const mouse = new THREE.Vector2(
         (event.clientX / window.innerWidth) * 2 - 1,
         -(event.clientY / window.innerHeight) * 2 + 1
     );
     raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObjects(walls);
+
+    const projectorMeshes = projectors.flatMap(p => p.pickMeshes);
+    const intersects = raycaster.intersectObjects(projectorMeshes);
+    if (intersects.length > 0) {
+        return intersects[0].object.userData.parentProjector;
+    }
+    return null;
+}
+
+// Walls (for picture frames) plus floor and ceiling (for projectors)
+function getDrawSurfaceIntersection(event) {
+    const mouse = new THREE.Vector2(
+        (event.clientX / window.innerWidth) * 2 - 1,
+        -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects([...walls, ...projectorSurfaces]);
     if (intersects.length > 0) {
         return intersects[0];
     }
     return null;
+}
+
+// Hit point offset slightly off the surface (along its world-space normal) to prevent z-fighting
+function getDrawPoint(intersection) {
+    const normal = intersection.face.normal.clone().transformDirection(intersection.object.matrixWorld);
+    return intersection.point.clone().add(normal.multiplyScalar(0.01));
 }
 
 function updateDrawingLine() {
@@ -988,16 +1223,14 @@ function updateDrawingLine() {
 
 function startDrawing(event) {
     if (event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return;
-    if (selectedFrames.size > 0) return;
+    if (selectedFrames.size > 0 || selectedProjector) return;
 
-    const intersection = getWallIntersection(event);
+    const intersection = getDrawSurfaceIntersection(event);
     if (intersection) {
         isDrawing = true;
-        currentWall = intersection.object;
+        currentSurface = intersection.object;
         drawingPoints.length = 0;
-        // Offset slightly from wall to prevent z-fighting
-        const point = intersection.point.clone().add(intersection.face.normal.multiplyScalar(0.01));
-        drawingPoints.push(point);
+        drawingPoints.push(getDrawPoint(intersection));
     }
 }
 
@@ -1009,10 +1242,9 @@ function continueDrawing(event) {
         return;
     }
 
-    const intersection = getWallIntersection(event);
-    if (intersection && intersection.object === currentWall) {
-        const point = intersection.point.clone().add(intersection.face.normal.multiplyScalar(0.01));
-        drawingPoints.push(point);
+    const intersection = getDrawSurfaceIntersection(event);
+    if (intersection && intersection.object === currentSurface) {
+        drawingPoints.push(getDrawPoint(intersection));
         updateDrawingLine();
     }
 }
@@ -1025,7 +1257,7 @@ function cancelDrawing() {
         drawingLine = null;
     }
     drawingPoints.length = 0;
-    currentWall = null;
+    currentSurface = null;
 }
 
 function finishDrawing() {
@@ -1036,12 +1268,15 @@ function finishDrawing() {
 
     isDrawing = false;
 
+    // Keep hold of the surface; a new stroke may start during the flicker below
+    const surface = currentSurface;
+
     // Close the polygon
     drawingPoints.push(drawingPoints[0].clone());
     updateDrawingLine();
 
-    // Calculate bounding box in wall's local space
-    const wallWorldMatrix = currentWall.matrixWorld.clone();
+    // Calculate bounding box in the surface's local space
+    const wallWorldMatrix = surface.matrixWorld.clone();
     const wallInverseMatrix = wallWorldMatrix.clone().invert();
 
     const localPoints = drawingPoints.map(p => p.clone().applyMatrix4(wallInverseMatrix));
@@ -1125,18 +1360,23 @@ function finishDrawing() {
             scene.remove(crossLine2);
             crossGeometry2.dispose();
 
-            // Create PictureFrame
-            const frame = new PictureFrame({
-                width: width,
-                height: height
-            });
-            frame.position.copy(centerWorld);
-            frame.rotation.copy(currentWall.rotation);
-            scene.add(frame);
-            pictureFrames.push(frame);
+            if (projectorSurfaces.includes(surface)) {
+                // Floor/ceiling: create a VideoProjector mounted at the drawn spot
+                createProjectorOnSurface(centerWorld, surface);
+            } else {
+                // Wall: create a PictureFrame
+                const frame = new PictureFrame({
+                    width: width,
+                    height: height
+                });
+                frame.position.copy(centerWorld);
+                frame.rotation.copy(surface.rotation);
+                scene.add(frame);
+                pictureFrames.push(frame);
+            }
 
             drawingPoints.length = 0;
-            currentWall = null;
+            currentSurface = null;
         }
     }, 100);
 }
@@ -1151,6 +1391,18 @@ renderer.domElement.addEventListener('mousedown', (event) => {
         didDrag = false;
 
         if (!event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+            // Pressing on the selected projector starts dragging it; any projector blocks drawing
+            const projector = getProjectorIntersection(event);
+            if (projector) {
+                if (projector === selectedProjector) {
+                    isDraggingProjector = true;
+                    dragStartMousePos = { x: event.clientX, y: event.clientY };
+                    projectorDragStartPosition = projector.position.clone();
+                    projector.savePriorPosition();
+                }
+                return;
+            }
+
             // Check if clicking on a frame first
             const frame = getFrameIntersection(event);
             if (!frame) {
@@ -1163,6 +1415,20 @@ renderer.domElement.addEventListener('mousedown', (event) => {
 renderer.domElement.addEventListener('click', (event) => {
     if (event.button !== 0 || didDrag) return;
     if (event.altKey) return; // Alt is for orbit
+
+    // Projectors are checked first: they hang/stand in the room, in front of the walls' frames
+    const projector = getProjectorIntersection(event);
+    if (projector) {
+        if (event.ctrlKey || event.metaKey) {
+            // Ctrl-click: deselect
+            if (projector === selectedProjector) {
+                deselectProjector();
+            }
+        } else {
+            selectProjector(projector);
+        }
+        return;
+    }
 
     const frame = getFrameIntersection(event);
 
@@ -1279,7 +1545,8 @@ function saveGallery() {
                 theta: spherical.theta
             }
         },
-        frames: []
+        frames: [],
+        projectors: []
     };
 
     for (const frame of pictureFrames) {
@@ -1314,6 +1581,26 @@ function saveGallery() {
         data.frames.push(frameData);
     }
 
+    for (const projector of projectors) {
+        data.projectors.push({
+            mount: projector.mount,
+            position: {
+                x: projector.position.x,
+                y: projector.position.y,
+                z: projector.position.z
+            },
+            aim: {
+                x: projector.aim.x,
+                y: projector.aim.y,
+                z: projector.aim.z
+            },
+            content: projector.content,
+            intensity: projector.intensity,
+            sweep: projector.sweep,
+            showBeam: projector.showBeam
+        });
+    }
+
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1346,6 +1633,13 @@ function loadGallery(file) {
             pictureFrames.length = 0;
             selectedFrames.clear();
             updateGUIFromSelection();
+
+            // Clear existing projectors
+            for (const projector of [...projectors]) {
+                removeProjector(projector);
+            }
+            selectedProjector = null;
+            updateProjectorGUI();
 
             // Restore camera if saved
             if (data.camera) {
@@ -1401,6 +1695,25 @@ function loadGallery(file) {
                 pictureFrames.push(frame);
             }
 
+            // Load projectors (absent in galleries saved before projectors existed)
+            for (const projectorData of data.projectors || []) {
+                const projector = new VideoProjector({
+                    mount: projectorData.mount,
+                    surfaceY: projectorData.mount === 'ceiling' ? roomHeight : 0,
+                    aim: new THREE.Vector3(projectorData.aim.x, projectorData.aim.y, projectorData.aim.z),
+                    content: projectorData.content,
+                    intensity: projectorData.intensity,
+                    sweep: projectorData.sweep,
+                    showBeam: projectorData.showBeam
+                });
+                projector.position.set(
+                    projectorData.position.x,
+                    projectorData.position.y,
+                    projectorData.position.z
+                );
+                addProjector(projector);
+            }
+
             // Restore keyboard focus
             if (document.activeElement) {
                 document.activeElement.blur();
@@ -1452,6 +1765,12 @@ document.addEventListener('keydown', (event) => {
             clearAlignmentLines();
             updateGUIFromSelection();
         }
+        if (selectedProjector) {
+            event.preventDefault();
+            removeProjector(selectedProjector);
+            selectedProjector = null;
+            updateProjectorGUI();
+        }
     }
 
     // Select all frames
@@ -1461,6 +1780,7 @@ document.addEventListener('keydown', (event) => {
         if (selectedFrames.size === pictureFrames.length && pictureFrames.length > 0) {
             deselectAll();
         } else {
+            deselectProjector();
             for (const frame of pictureFrames) {
                 frame.setSelected(true);
                 selectedFrames.add(frame);
@@ -1476,6 +1796,10 @@ document.addEventListener('keydown', (event) => {
             if (frame.hasPriorPosition) {
                 frame.restorePriorPosition();
             }
+        }
+        if (selectedProjector && selectedProjector.hasPriorPosition) {
+            selectedProjector.restorePriorPosition();
+            updateProjectorGUI();
         }
     }
 
@@ -1525,6 +1849,34 @@ document.addEventListener('keydown', (event) => {
             frame.position.add(nudgeDir);
             snapFrameToNearestWall(frame);
         }
+    }
+
+    // Arrow key nudging for the selected projector, across its floor/ceiling
+    if (arrowKeys.includes(event.key) && selectedProjector) {
+        event.preventDefault();
+
+        const { forward, right } = getCameraGroundAxes();
+        let nudgeDir = new THREE.Vector3();
+
+        switch (event.key) {
+            case 'ArrowUp':
+                nudgeDir = forward.multiplyScalar(nudgeStep);
+                break;
+            case 'ArrowDown':
+                nudgeDir = forward.multiplyScalar(-nudgeStep);
+                break;
+            case 'ArrowRight':
+                nudgeDir = right.multiplyScalar(nudgeStep);
+                break;
+            case 'ArrowLeft':
+                nudgeDir = right.multiplyScalar(-nudgeStep);
+                break;
+        }
+
+        selectedProjector.savePriorPosition();
+        selectedProjector.position.add(nudgeDir);
+        clampProjectorToRoom(selectedProjector);
+        updateProjectorGUI();
     }
 });
 
@@ -1583,6 +1935,10 @@ function animate() {
     const delta = clock.getDelta();
 
     updateMovement(delta);
+
+    for (const projector of projectors) {
+        projector.update(clock.elapsedTime);
+    }
 
     renderer.render(scene, camera);
 }
