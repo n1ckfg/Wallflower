@@ -1081,7 +1081,8 @@ const projectorParams = {
     aimX: 0,
     aimY: 0,
     aimZ: 0,
-    mount: ''
+    mount: '',
+    movie: ''
 };
 
 function updateProjectorGUI() {
@@ -1104,6 +1105,7 @@ function updateProjectorGUI() {
     projectorParams.aimY = selectedProjector.aim.y;
     projectorParams.aimZ = selectedProjector.aim.z;
     projectorParams.mount = selectedProjector.mount;
+    projectorParams.movie = selectedProjector.videoName || 'none (drop an .mp4)';
 
     projectorGui.controllersRecursive().forEach(c => c.updateDisplay());
 }
@@ -1144,6 +1146,7 @@ projectorAimFolder.add(projectorParams, 'aimZ', -roomDepth / 2, roomDepth / 2, 0
 
 const projectorInfoFolder = projectorGui.addFolder('Info');
 projectorInfoFolder.add(projectorParams, 'mount').name('Mount').disable();
+projectorInfoFolder.add(projectorParams, 'movie').name('Movie').disable();
 
 const projectorFileFolder = projectorGui.addFolder('File');
 projectorFileFolder.add({ save: saveGallery }, 'save').name('Save Gallery');
@@ -1476,7 +1479,11 @@ renderer.domElement.addEventListener('mouseup', (event) => {
     }
 });
 
-// Image drag-drop handling
+// Keep files dropped outside the 3D view (e.g. on a GUI panel) from navigating away from the gallery
+document.addEventListener('dragover', (event) => event.preventDefault());
+document.addEventListener('drop', (event) => event.preventDefault());
+
+// Image/movie drag-drop handling
 renderer.domElement.addEventListener('dragover', (event) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
@@ -1489,6 +1496,27 @@ renderer.domElement.addEventListener('drop', (event) => {
     if (files.length === 0) return;
 
     const file = files[0];
+
+    // Movies go to the projector dropped on, or else the selected projector
+    if (file.type.startsWith('video/')) {
+        const projector = getProjectorIntersection(event) || selectedProjector;
+        if (!projector) return;
+
+        projector.setVideo(file, file.name).catch((err) => {
+            console.error('Error loading movie:', err);
+            alert(`Could not play ${file.name}`);
+            if (projector === selectedProjector) {
+                updateProjectorGUI();
+            }
+        });
+        projector.content = 'Movie';
+
+        if (projector === selectedProjector) {
+            updateProjectorGUI();
+        }
+        return;
+    }
+
     if (!file.type.startsWith('image/')) return;
 
     // Find which frame was dropped on
@@ -1530,7 +1558,16 @@ renderer.domElement.addEventListener('drop', (event) => {
 });
 
 // Save/Load gallery functions
-function saveGallery() {
+function blobToDataURL(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+    });
+}
+
+async function saveGallery() {
     const data = {
         version: 1,
         camera: {
@@ -1581,8 +1618,10 @@ function saveGallery() {
         data.frames.push(frameData);
     }
 
+    const movieConversions = [];
+
     for (const projector of projectors) {
-        data.projectors.push({
+        const projectorData = {
             mount: projector.mount,
             position: {
                 x: projector.position.x,
@@ -1597,22 +1636,42 @@ function saveGallery() {
             content: projector.content,
             intensity: projector.intensity,
             sweep: projector.sweep,
-            showBeam: projector.showBeam
-        });
+            showBeam: projector.showBeam,
+            video: null,
+            videoName: projector.videoName
+        };
+
+        // Convert movie to base64 if exists (reading is async, so it's awaited below)
+        if (projector.videoBlob) {
+            movieConversions.push(
+                blobToDataURL(projector.videoBlob).then((dataURL) => {
+                    projectorData.video = dataURL;
+                })
+            );
+        }
+
+        data.projectors.push(projectorData);
     }
 
-    const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+    try {
+        await Promise.all(movieConversions);
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `gallery_${timestamp}.json`;
+        const json = JSON.stringify(data, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
 
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `gallery_${timestamp}.json`;
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        console.error('Error saving gallery:', err);
+        alert('Error saving gallery');
+    }
 
     // Restore keyboard focus
     if (document.activeElement) {
@@ -1711,6 +1770,23 @@ function loadGallery(file) {
                     projectorData.position.y,
                     projectorData.position.z
                 );
+
+                // Load movie if exists
+                if (projectorData.video) {
+                    fetch(projectorData.video)
+                        .then((response) => response.blob())
+                        .then((blob) => {
+                            // Skip if another gallery was loaded in the meantime
+                            if (!projectors.includes(projector)) return;
+                            const loaded = projector.setVideo(blob, projectorData.videoName || 'movie');
+                            if (projector === selectedProjector) {
+                                updateProjectorGUI();
+                            }
+                            return loaded;
+                        })
+                        .catch((err) => console.error('Error loading projector movie:', err));
+                }
+
                 addProjector(projector);
             }
 

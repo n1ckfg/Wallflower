@@ -1,6 +1,6 @@
 # Architecture: Wallflower
 
-Wallflower is a lightweight 3D gallery builder application running in the browser. It allows users to navigate a 3D space, draw picture frames onto the walls, customize them, drop images into them, draw video projectors onto the floor or ceiling, and save/load gallery layouts.
+Wallflower is a lightweight 3D gallery builder application running in the browser. It allows users to navigate a 3D space, draw picture frames onto the walls, customize them, drop images into them, draw video projectors onto the floor or ceiling, drop movies into them, and save/load gallery layouts.
 
 ## Core Technologies
 
@@ -38,15 +38,16 @@ The `PictureFrame` class dynamically constructs and updates its geometry based o
 
 ### 5. Projector Encapsulation (`VideoProjector`)
 The projector casts its image as real light: a `THREE.SpotLight` whose `.map` is a `THREE.CanvasTexture`, so geometry in the beam (including frames) occludes it and casts shadows.
-- **Video Source**: Each projector owns a 1024x1024 canvas redrawn every frame by `update(t)` (called from the render loop). Content (test pattern, grid, or plasma) is drawn into a 16:9 rectangle; the black surround projects no light, mimicking lens masking.
+- **Video Source**: Each projector owns a 1024x1024 canvas redrawn every frame by `update(t)` (called from the render loop). Content (test pattern, grid, plasma, or movie) is drawn into a 16:9 rectangle; the black surround projects no light, mimicking lens masking.
+- **Movies**: Dropping a video file (e.g. `.mp4`) onto a projector, or anywhere in the view while a projector is selected, calls `setVideo()`. This plays the file muted and looped in a hidden `<video>` element (from an object URL), which is letterboxed into the 16:9 frame each tick without the alignment overlay, and switches the source to "Movie". Playback pauses whenever another source is chosen. The original `Blob` is kept on the projector (`videoBlob`) for saving. "Movie" with no file loaded projects a slate prompting for one.
 - **Assembly**: The group stays upright at the projector head's position. An inner `head` group (housing, lens, light, cosmetic beam cone) pivots via `lookAt()` to face the `aim` point, while a vertical stalk and plate are rescaled each frame to reach the ceiling or floor (`mount` / `surfaceY`). The spotlight target rides on the head's -Z axis, so the optional pan sweep only needs to rotate the head.
 - **Helper**: The `SpotLightHelper` tracks the light's world matrix, so `main.js` adds it to the scene root alongside the projector (`addProjector` / `removeProjector`).
 - **Limits**: Each projector uses two fragment texture units (light map + shadow map), so GPUs with 16 units fit roughly seven projectors.
 
 ### 6. Data Serialization (Save/Load)
 The application can export the current state to a JSON file.
-- **Save**: Serializes camera position/target, all frame properties (position, rotation, dimensions), and all projector properties (mount, position, aim, video source, intensity, sweep, beam visibility). Images are converted to base64 strings via a 2D canvas context and embedded directly in the JSON.
-- **Load**: Parses the JSON, clears the current scene, restores the camera state, instantiates new `PictureFrame` and `VideoProjector` objects, and re-applies the base64 textures. Files without a `projectors` array (saved before projectors existed) still load.
+- **Save**: Serializes camera position/target, all frame properties (position, rotation, dimensions), and all projector properties (mount, position, aim, video source, intensity, sweep, beam visibility, movie file name). Images are converted to base64 strings via a 2D canvas context, and movies are read from their `Blob` as base64 data URLs (asynchronously, so `saveGallery` is `async`); both are embedded directly in the JSON, so large movies make large gallery files.
+- **Load**: Parses the JSON, clears the current scene, restores the camera state, instantiates new `PictureFrame` and `VideoProjector` objects, and re-applies the base64 textures and movies (each movie data URL is turned back into a `Blob` via `fetch`). Files without a `projectors` array (saved before projectors existed) still load.
 
 ### 7. Contextual UI
-Two `lil-gui` panels are dynamically updated and toggled based on the current selection state. When one or more frames are selected, the "Picture Frame" panel allows users to adjust position, scaling, and alignment, synchronizing state between the DOM inputs and the 3D scene. When a projector is selected, the "Projector" panel exposes the `projection_sim` controls (video source, intensity, pan sweep, beam cone, light helper) plus position, aim, and file actions.
+Two `lil-gui` panels are dynamically updated and toggled based on the current selection state. When one or more frames are selected, the "Picture Frame" panel allows users to adjust position, scaling, and alignment, synchronizing state between the DOM inputs and the 3D scene. When a projector is selected, the "Projector" panel exposes the `projection_sim` controls (video source, intensity, pan sweep, beam cone, light helper) plus position, aim, the loaded movie's name, and file actions.

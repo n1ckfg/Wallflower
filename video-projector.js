@@ -11,7 +11,7 @@ const FRAME_W = AR * FRAME_H;
 const FX = (VC - FRAME_W) / 2;
 const FY = (VC - FRAME_H) / 2;
 
-export const VIDEO_SOURCES = ['Test pattern', 'Grid', 'Plasma'];
+export const VIDEO_SOURCES = ['Test pattern', 'Grid', 'Plasma', 'Movie'];
 
 const BAR_COLORS = ['#bfbfbf', '#bfbf00', '#00bfbf', '#00bf00', '#bf00bf', '#bf0000', '#0000bf'];
 
@@ -102,9 +102,34 @@ function drawPlasma(ctx, t) {
     ctx.drawImage(plasmaCanvas, FX, FY, FRAME_W, FRAME_H);
 }
 
-function drawVideoFrame(ctx, t, mode) {
+function drawMovie(ctx, video) {
+    if (!video) {
+        // No movie loaded yet: project a slate saying how to load one
+        ctx.save();
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 40px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Drop an .mp4 onto this projector', VC / 2, VC / 2);
+        ctx.restore();
+        return;
+    }
+    if (video.readyState < video.HAVE_CURRENT_DATA) return;
+    // Letterbox/pillarbox the movie inside the 16:9 frame, like a real projector panel
+    const scale = Math.min(FRAME_W / video.videoWidth, FRAME_H / video.videoHeight);
+    const w = video.videoWidth * scale;
+    const h = video.videoHeight * scale;
+    ctx.drawImage(video, (VC - w) / 2, (VC - h) / 2, w, h);
+}
+
+function drawVideoFrame(ctx, t, mode, video) {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, VC, VC);
+    if (mode === 'Movie') {
+        // Movies are projected clean, without the alignment overlay
+        drawMovie(ctx, video);
+        return;
+    }
     if (mode === 'Test pattern') drawTestPattern(ctx, t);
     else if (mode === 'Grid') drawGrid(ctx, t);
     else drawPlasma(ctx, t);
@@ -140,8 +165,15 @@ export class VideoProjector extends THREE.Group {
         this.mount = mount;
         this.surfaceY = surfaceY;
         this.aim = aim.clone();
-        this.content = content;
         this.sweep = sweep;
+
+        // Movie source (see setVideo); the blob is kept so the gallery can be saved with it
+        this.videoBlob = null;
+        this.videoName = null;
+        this._video = null;
+        this._videoURL = null;
+
+        this.content = content;
 
         // Video source
         this._canvas = document.createElement('canvas');
@@ -245,6 +277,66 @@ export class VideoProjector extends THREE.Group {
         this.head.add(this._selectionOutline);
     }
 
+    get content() {
+        return this._content;
+    }
+
+    set content(mode) {
+        this._content = mode;
+        this._syncPlayback();
+    }
+
+    // Load a movie (File or Blob) as this projector's 'Movie' source. Resolves once the
+    // first frame is decoded; rejects (and drops the movie) if the browser can't play it.
+    setVideo(blob, name) {
+        this.clearVideo();
+
+        const video = document.createElement('video');
+        video.muted = true; // Muted video may autoplay without a user gesture
+        video.loop = true;
+        video.playsInline = true;
+        this._videoURL = URL.createObjectURL(blob);
+        video.src = this._videoURL;
+
+        this._video = video;
+        this.videoBlob = blob;
+        this.videoName = name;
+        this._syncPlayback();
+
+        return new Promise((resolve, reject) => {
+            video.addEventListener('loadeddata', () => resolve(), { once: true });
+            video.addEventListener('error', () => {
+                if (this._video === video) this.clearVideo();
+                reject(new Error(`Could not play ${name}`));
+            }, { once: true });
+        });
+    }
+
+    clearVideo() {
+        if (this._video) {
+            this._video.pause();
+            this._video.removeAttribute('src');
+            this._video.load(); // Releases the decoder
+            this._video = null;
+        }
+        if (this._videoURL) {
+            URL.revokeObjectURL(this._videoURL);
+            this._videoURL = null;
+        }
+        this.videoBlob = null;
+        this.videoName = null;
+    }
+
+    // Only play the movie while it's the projected source
+    _syncPlayback() {
+        if (!this._video) return;
+        if (this._content === 'Movie') {
+            this._video.play().catch(() => {});
+        } else {
+            this._video.pause();
+        }
+    }
+
     get intensity() {
         return this.spot.intensity;
     }
@@ -272,7 +364,7 @@ export class VideoProjector extends THREE.Group {
 
     // Call once per frame: redraws the video, aims the head, and fits the mount and beam
     update(t) {
-        drawVideoFrame(this._ctx, t, this.content);
+        drawVideoFrame(this._ctx, t, this._content, this._video);
         this.videoTexture.needsUpdate = true;
 
         this.head.lookAt(this.aim);
@@ -331,6 +423,7 @@ export class VideoProjector extends THREE.Group {
     }
 
     dispose() {
+        this.clearVideo();
         this.videoTexture.dispose();
         this.spot.dispose(); // Frees the shadow map
         this.helper.dispose();
