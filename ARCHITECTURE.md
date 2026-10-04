@@ -5,21 +5,22 @@ Wallflower is a lightweight 3D gallery builder application running in the browse
 ## Core Technologies
 
 - **Vanilla JavaScript (ES Modules)**: The application is written in standard ES modules without a build step or bundler.
-- **Three.js**: Used for all 3D rendering, scene management, raycasting, and math (vectors, matrices). Loaded via an import map from a CDN, which also maps `three/addons/` for `GLTFLoader`, `TransformControls`, and the post-processing passes.
-- **lil-gui**: A lightweight GUI library used for the contextual property panel.
+- **Three.js** (r160): Used for all 3D rendering, scene management, raycasting, and math (vectors, matrices). Loaded via an import map from a local copy in `js/libraries/three/`, which also maps `three/addons/` for `GLTFLoader`, `TransformControls`, and the post-processing passes.
+- **lil-gui** (0.19.2): A lightweight GUI library used for the contextual property panel, also vendored in `js/libraries/lil-gui/`.
 - **http-server**: Used via the launch scripts (`run.bat`, `run.command`) to serve the static files locally.
 
 ## File Structure
 
 - `index.html`: The entry point. Sets up the canvas, UI overlay, and defines the ES module import map for dependencies.
-- `main.js`: The core application script containing scene initialization, the render loop, user interaction logic, and state management.
-- `picture-frame.js`: Encapsulates the `PictureFrame` custom class (extending `THREE.Group`), which handles the generation and manipulation of the individual frame 3D models.
-- `video-projector.js`: Encapsulates the `VideoProjector` custom class (extending `THREE.Group`), a physical video projector ported from the `projection_sim` project.
-- `model-loader.js`: `loadModelFiles()`, the drag-and-drop glTF loader ported from the `gltFpsViewer` project.
-- `recorder.js`: The `Recorder` class from `gltFpsViewer` (unchanged), wrapping `MediaRecorder` to capture the canvas to a video file.
-- `palette.js`: The `Palette` panel from `gltFpsViewer`, adapted so its swatches set the room light's colour instead of the background; it also holds the levels sliders.
-- `levels.js`: The `LevelsShader` from `gltFpsViewer` (unchanged), used by the levels post-processing pass.
-- `style.css`: Minimal styling to ensure the canvas fills the viewport and UI elements are positioned correctly.
+- `js/main.js`: The core application script containing scene initialization, the render loop, user interaction logic, and state management.
+- `js/picture-frame.js`: Encapsulates the `PictureFrame` custom class (extending `THREE.Group`), which handles the generation and manipulation of the individual frame 3D models.
+- `js/video-projector.js`: Encapsulates the `VideoProjector` custom class (extending `THREE.Group`), a physical video projector ported from the `projection_sim` project.
+- `js/model-loader.js`: `loadModelFiles()`, the drag-and-drop glTF loader ported from the `gltFpsViewer` project.
+- `js/recorder.js`: The `Recorder` class from `gltFpsViewer` (unchanged), wrapping `MediaRecorder` to capture the canvas to a video file.
+- `js/palette.js`: The `Palette` panel from `gltFpsViewer`, adapted so its swatches set the room light's colour instead of the background; it also holds the levels sliders.
+- `js/levels.js`: The `LevelsShader` from `gltFpsViewer` (unchanged), used by the levels post-processing pass.
+- `js/libraries/`: Local copies of the third-party modules (with their licenses), so the app runs without network access. It mirrors each npm package's layout: `three/build/three.module.js`, only the `three/examples/jsm/` addons the app imports (plus the files they import), and `lil-gui/dist/lil-gui.esm.min.js`. To use another addon, copy it (and its relative imports) from the same three.js version into the matching path.
+- `css/style.css`: Minimal styling to ensure the canvas fills the viewport and UI elements are positioned correctly.
 - `run.bat` / `run.command`: Convenience scripts for Windows and macOS/Linux to find an available port and launch a local web server.
 
 ## Key Systems
