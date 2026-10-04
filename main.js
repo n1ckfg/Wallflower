@@ -1,7 +1,16 @@
 import * as THREE from 'three';
 import { GUI } from 'lil-gui';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { PictureFrame } from './picture-frame.js';
 import { VideoProjector, VIDEO_SOURCES } from './video-projector.js';
+import { loadModelFiles, MODEL_FILE_PATTERN } from './model-loader.js';
+import { Recorder } from './recorder.js';
+import { Palette } from './palette.js';
+import { LevelsShader } from './levels.js';
 
 // Scene setup
 const scene = new THREE.Scene();
@@ -18,6 +27,21 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
+
+// Post-processing (from gltFpsViewer): the palette's levels pass runs last, after
+// OutputPass has encoded the frame to sRGB, so it adjusts display values. Neutral
+// levels skip the chain entirely and render straight to the canvas.
+const composer = new EffectComposer(renderer);
+// The composer's default targets have no MSAA; set before they are first allocated
+composer.renderTarget1.samples = 4;
+composer.renderTarget2.samples = 4;
+composer.setPixelRatio(window.devicePixelRatio);
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new OutputPass());
+const levelsPass = new ShaderPass(LevelsShader);
+composer.addPass(levelsPass);
+let useComposer = false;
 
 // Room dimensions
 const roomWidth = 10;
@@ -266,6 +290,9 @@ function getFrameUnderMouse(event) {
 }
 
 document.addEventListener('mousedown', (event) => {
+    // Presses on the GUI panels or palette are not aimed at the scene
+    if (event.target !== renderer.domElement) return;
+
     // Check if clicking near a corner for resize
     if (cornersHighlighted && selectedFrames.size > 0) {
         const cornerHit = checkCornerProximity(event);
@@ -587,6 +614,148 @@ function createProjectorOnSurface(point, surface) {
     return projector;
 }
 
+// glTF model tracking and selection (one model selected at a time, never together
+// with frames or a projector). The selected model gets gltFpsViewer's
+// translate/rotate/scale gizmo; keys 1/2/3 switch its mode.
+const models = [];
+const modelSources = new Map(); // Model -> the dropped files it was loaded from, kept for saving
+let selectedModel = null;
+let modelSelectionHelper = null;
+let modelPriorTransform = null;
+
+const transformControl = new TransformControls(camera, renderer.domElement);
+scene.add(transformControl);
+
+// Remember where the model was before each gizmo drag, for Ctrl/Cmd+Z
+transformControl.addEventListener('mouseDown', () => {
+    if (!transformControl.object) return;
+    modelPriorTransform = {
+        position: transformControl.object.position.clone(),
+        quaternion: transformControl.object.quaternion.clone(),
+        scale: transformControl.object.scale.clone()
+    };
+});
+
+function addModel(model, files) {
+    model.traverse((child) => {
+        if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        }
+    });
+    scene.add(model);
+    models.push(model);
+    modelSources.set(model, files);
+}
+
+function removeModel(model) {
+    if (model === selectedModel) {
+        deselectModel();
+    }
+    scene.remove(model);
+    model.traverse((child) => {
+        if (child.isMesh) {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+                if (Array.isArray(child.material)) {
+                    child.material.forEach(m => m.dispose());
+                } else {
+                    child.material.dispose();
+                }
+            }
+        }
+    });
+    const index = models.indexOf(model);
+    if (index > -1) {
+        models.splice(index, 1);
+    }
+    modelSources.delete(model);
+}
+
+// Models keep their authored scale (glTF units are meters) unless they wouldn't fit in the room
+function fitModelToRoom(model) {
+    const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+    const fit = Math.min(1, (roomWidth - 1) / size.x, (roomDepth - 1) / size.z, (roomHeight - 0.5) / size.y);
+    if (fit < 1) {
+        model.scale.multiplyScalar(fit);
+    }
+}
+
+// Stand the model on the floor, centered on the given point and kept inside the walls
+function placeModelOnFloor(model, point) {
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
+    const halfX = (box.max.x - box.min.x) / 2;
+    const halfZ = (box.max.z - box.min.z) / 2;
+    const x = THREE.MathUtils.clamp(point.x, -roomWidth / 2 + halfX, roomWidth / 2 - halfX);
+    const z = THREE.MathUtils.clamp(point.z, -roomDepth / 2 + halfZ, roomDepth / 2 - halfZ);
+    model.position.x += x - center.x;
+    model.position.y -= box.min.y;
+    model.position.z += z - center.z;
+}
+
+function dropModel(files, event) {
+    const intersection = getDrawSurfaceIntersection(event);
+    const dropPoint = intersection ? intersection.point : new THREE.Vector3();
+
+    loadModelFiles(files).then(({ model, files: usedFiles }) => {
+        fitModelToRoom(model);
+        placeModelOnFloor(model, dropPoint);
+        addModel(model, usedFiles);
+        selectModel(model);
+    }).catch((err) => {
+        console.error('Error loading model:', err);
+        alert(err.message || 'Error loading model.');
+    });
+}
+
+function getModelIntersection(event) {
+    const mouse = new THREE.Vector2(
+        (event.clientX / window.innerWidth) * 2 - 1,
+        -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObjects(models, true);
+    if (intersects.length > 0) {
+        // Walk up from the mesh hit to the model's root
+        let model = intersects[0].object;
+        while (model.parent && !models.includes(model)) {
+            model = model.parent;
+        }
+        return models.includes(model) ? model : null;
+    }
+    return null;
+}
+
+function selectModel(model) {
+    deselectFrames();
+    deselectProjector();
+    if (model === selectedModel) return;
+    deselectModel();
+
+    selectedModel = model;
+    modelPriorTransform = null;
+    transformControl.attach(model);
+    modelSelectionHelper = new THREE.BoxHelper(model, 0x00ff00);
+    scene.add(modelSelectionHelper);
+}
+
+function deselectModel() {
+    if (modelSelectionHelper) {
+        scene.remove(modelSelectionHelper);
+        modelSelectionHelper.dispose();
+        modelSelectionHelper = null;
+    }
+    selectedModel = null;
+    transformControl.detach();
+}
+
+// The gizmo is being hovered or dragged, so pointer input belongs to it
+function isUsingGizmo() {
+    return transformControl.dragging || transformControl.axis !== null;
+}
+
 // Alignment guide lines
 const alignmentLineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, depthTest: false });
 const alignmentLines = [];
@@ -727,8 +896,9 @@ function updateAlignmentLines() {
 }
 
 function selectFrame(frame, addToSelection = false) {
-    // Frames and projectors are never selected together
+    // Frames are never selected together with a projector or model
     deselectProjector();
+    deselectModel();
 
     // Track the last selected frame before changing selection
     if (selectedFrames.size > 0 && !addToSelection) {
@@ -759,24 +929,25 @@ function deselectFrame(frame) {
     updateGUIFromSelection();
 }
 
-function deselectAll() {
+function deselectFrames() {
     for (const f of selectedFrames) {
         f.setSelected(false);
     }
     selectedFrames.clear();
     clearAlignmentLines();
     updateGUIFromSelection();
+}
+
+function deselectAll() {
+    deselectFrames();
     deselectProjector();
+    deselectModel();
 }
 
 function selectProjector(projector) {
-    // Frames and projectors are never selected together
-    for (const f of selectedFrames) {
-        f.setSelected(false);
-    }
-    selectedFrames.clear();
-    clearAlignmentLines();
-    updateGUIFromSelection();
+    // A projector is never selected together with frames or a model
+    deselectFrames();
+    deselectModel();
 
     if (selectedProjector && selectedProjector !== projector) {
         selectedProjector.setSelected(false);
@@ -1226,7 +1397,7 @@ function updateDrawingLine() {
 
 function startDrawing(event) {
     if (event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return;
-    if (selectedFrames.size > 0 || selectedProjector) return;
+    if (selectedFrames.size > 0 || selectedProjector || selectedModel) return;
 
     const intersection = getDrawSurfaceIntersection(event);
     if (intersection) {
@@ -1393,6 +1564,8 @@ renderer.domElement.addEventListener('mousedown', (event) => {
         mouseDownPos = { x: event.clientX, y: event.clientY };
         didDrag = false;
 
+        if (isUsingGizmo()) return;
+
         if (!event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
             // Pressing on the selected projector starts dragging it; any projector blocks drawing
             const projector = getProjectorIntersection(event);
@@ -1406,6 +1579,9 @@ renderer.domElement.addEventListener('mousedown', (event) => {
                 return;
             }
 
+            // Pressing on a model never starts a drawing on the surface behind it
+            if (getModelIntersection(event)) return;
+
             // Check if clicking on a frame first
             const frame = getFrameIntersection(event);
             if (!frame) {
@@ -1418,6 +1594,7 @@ renderer.domElement.addEventListener('mousedown', (event) => {
 renderer.domElement.addEventListener('click', (event) => {
     if (event.button !== 0 || didDrag) return;
     if (event.altKey) return; // Alt is for orbit
+    if (isUsingGizmo()) return; // A click on a gizmo handle keeps the model selected
 
     // Projectors are checked first: they hang/stand in the room, in front of the walls' frames
     const projector = getProjectorIntersection(event);
@@ -1429,6 +1606,20 @@ renderer.domElement.addEventListener('click', (event) => {
             }
         } else {
             selectProjector(projector);
+        }
+        return;
+    }
+
+    // Then models, which stand in the room in front of the walls
+    const model = getModelIntersection(event);
+    if (model) {
+        if (event.ctrlKey || event.metaKey) {
+            // Ctrl-click: deselect
+            if (model === selectedModel) {
+                deselectModel();
+            }
+        } else {
+            selectModel(model);
         }
         return;
     }
@@ -1483,7 +1674,7 @@ renderer.domElement.addEventListener('mouseup', (event) => {
 document.addEventListener('dragover', (event) => event.preventDefault());
 document.addEventListener('drop', (event) => event.preventDefault());
 
-// Image/movie drag-drop handling
+// Model/image/movie drag-drop handling
 renderer.domElement.addEventListener('dragover', (event) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
@@ -1494,6 +1685,12 @@ renderer.domElement.addEventListener('drop', (event) => {
 
     const files = event.dataTransfer.files;
     if (files.length === 0) return;
+
+    // glTF models (dropped along with any .bin/texture files they use) stand on the floor where dropped
+    if (Array.from(files).some(f => MODEL_FILE_PATTERN.test(f.name))) {
+        dropModel(Array.from(files), event);
+        return;
+    }
 
     const file = files[0];
 
@@ -1582,8 +1779,13 @@ async function saveGallery() {
                 theta: spherical.theta
             }
         },
+        display: {
+            light: palette.light,
+            levels: { ...palette.levels }
+        },
         frames: [],
-        projectors: []
+        projectors: [],
+        models: []
     };
 
     for (const frame of pictureFrames) {
@@ -1618,7 +1820,8 @@ async function saveGallery() {
         data.frames.push(frameData);
     }
 
-    const movieConversions = [];
+    // Movies and model files are read asynchronously, so they're collected and awaited below
+    const fileConversions = [];
 
     for (const projector of projectors) {
         const projectorData = {
@@ -1641,9 +1844,9 @@ async function saveGallery() {
             videoName: projector.videoName
         };
 
-        // Convert movie to base64 if exists (reading is async, so it's awaited below)
+        // Convert movie to base64 if exists
         if (projector.videoBlob) {
-            movieConversions.push(
+            fileConversions.push(
                 blobToDataURL(projector.videoBlob).then((dataURL) => {
                     projectorData.video = dataURL;
                 })
@@ -1653,8 +1856,42 @@ async function saveGallery() {
         data.projectors.push(projectorData);
     }
 
+    for (const model of models) {
+        const modelData = {
+            position: {
+                x: model.position.x,
+                y: model.position.y,
+                z: model.position.z
+            },
+            rotation: {
+                x: model.rotation.x,
+                y: model.rotation.y,
+                z: model.rotation.z
+            },
+            scale: {
+                x: model.scale.x,
+                y: model.scale.y,
+                z: model.scale.z
+            },
+            files: []
+        };
+
+        // Embed the dropped files (.gltf/.glb plus any .bin/textures) as base64
+        for (const file of modelSources.get(model)) {
+            const fileData = { name: file.name, data: null };
+            fileConversions.push(
+                blobToDataURL(file).then((dataURL) => {
+                    fileData.data = dataURL;
+                })
+            );
+            modelData.files.push(fileData);
+        }
+
+        data.models.push(modelData);
+    }
+
     try {
-        await Promise.all(movieConversions);
+        await Promise.all(fileConversions);
 
         const json = JSON.stringify(data, null, 2);
         const blob = new Blob([json], { type: 'application/json' });
@@ -1679,11 +1916,33 @@ async function saveGallery() {
     }
 }
 
+// Lets async model loads tell whether another gallery was loaded while they were in flight
+let galleryLoadCount = 0;
+
+// Light colour and levels, saved by galleries that have them; older files get the defaults
+function applyDisplayState(display) {
+    if (!display || typeof display !== 'object') {
+        palette.reset();
+        return;
+    }
+    if (typeof display.light === 'string' && /^#[0-9a-f]{6}$/i.test(display.light)) {
+        palette.setLight(display.light.toLowerCase());
+    }
+    if (display.levels && typeof display.levels === 'object') {
+        const levels = {};
+        for (const key of ['blackPoint', 'whitePoint', 'gamma']) {
+            if (Number.isFinite(display.levels[key])) levels[key] = display.levels[key];
+        }
+        palette.setLevels(levels);
+    }
+}
+
 function loadGallery(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
             const data = JSON.parse(e.target.result);
+            const loadCount = ++galleryLoadCount;
 
             // Clear existing frames
             for (const frame of pictureFrames) {
@@ -1699,6 +1958,13 @@ function loadGallery(file) {
             }
             selectedProjector = null;
             updateProjectorGUI();
+
+            // Clear existing models
+            for (const model of [...models]) {
+                removeModel(model);
+            }
+
+            applyDisplayState(data.display);
 
             // Restore camera if saved
             if (data.camera) {
@@ -1790,6 +2056,25 @@ function loadGallery(file) {
                 addProjector(projector);
             }
 
+            // Load models (absent in galleries saved before models existed)
+            for (const modelData of data.models || []) {
+                Promise.all(modelData.files.map(fileData =>
+                    fetch(fileData.data)
+                        .then((response) => response.blob())
+                        .then((blob) => new File([blob], fileData.name, { type: blob.type }))
+                ))
+                    .then((files) => loadModelFiles(files))
+                    .then(({ model, files }) => {
+                        // Skip if another gallery was loaded in the meantime
+                        if (loadCount !== galleryLoadCount) return;
+                        model.position.set(modelData.position.x, modelData.position.y, modelData.position.z);
+                        model.rotation.set(modelData.rotation.x, modelData.rotation.y, modelData.rotation.z);
+                        model.scale.set(modelData.scale.x, modelData.scale.y, modelData.scale.z);
+                        addModel(model, files);
+                    })
+                    .catch((err) => console.error('Error loading model:', err));
+            }
+
             // Restore keyboard focus
             if (document.activeElement) {
                 document.activeElement.blur();
@@ -1815,11 +2100,57 @@ function openFileDialog() {
     input.click();
 }
 
+// Keys typed into a text field or dropdown (GUI number inputs, the video source menu)
+// belong to that control, not the scene
+function isEditingControl(target) {
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return true;
+    return target.tagName === 'INPUT' && !['checkbox', 'range', 'color', 'button'].includes(target.type);
+}
+
 // Keyboard input
 document.addEventListener('keydown', (event) => {
+    if (isEditingControl(event.target)) return;
+
     const key = event.key.toLowerCase();
     if (keys.hasOwnProperty(key)) {
         keys[key] = true;
+    }
+
+    // Capture and display hotkeys (from gltFpsViewer), ignored when combined with Ctrl/Cmd
+    if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (event.code === 'Escape' && palette.isOpen) {
+            palette.close();
+            return;
+        }
+
+        // R toggles recording (3-second countdown first; R during it cancels)
+        if (event.code === 'KeyR') {
+            if (!event.repeat) recorder.toggle();
+            return;
+        }
+
+        // Space takes a photo. The canvas is only readable right after a render,
+        // so the capture itself happens in animate().
+        if (event.code === 'Space') {
+            event.preventDefault();
+            // A focused GUI button or checkbox would otherwise be pressed on keyup
+            if (document.activeElement && document.activeElement !== document.body) {
+                document.activeElement.blur();
+            }
+            if (!event.repeat) photoRequested = true;
+            return;
+        }
+
+        if (event.code === 'KeyC') {
+            palette.toggle();
+            return;
+        }
+
+        // 1/2/3 switch the model gizmo between translate, rotate and scale
+        if (event.code === 'Digit1') transformControl.setMode('translate');
+        if (event.code === 'Digit2') transformControl.setMode('rotate');
+        if (event.code === 'Digit3') transformControl.setMode('scale');
     }
 
     // Delete selected frames
@@ -1847,6 +2178,10 @@ document.addEventListener('keydown', (event) => {
             selectedProjector = null;
             updateProjectorGUI();
         }
+        if (selectedModel) {
+            event.preventDefault();
+            removeModel(selectedModel);
+        }
     }
 
     // Select all frames
@@ -1857,6 +2192,7 @@ document.addEventListener('keydown', (event) => {
             deselectAll();
         } else {
             deselectProjector();
+            deselectModel();
             for (const frame of pictureFrames) {
                 frame.setSelected(true);
                 selectedFrames.add(frame);
@@ -1876,6 +2212,18 @@ document.addEventListener('keydown', (event) => {
         if (selectedProjector && selectedProjector.hasPriorPosition) {
             selectedProjector.restorePriorPosition();
             updateProjectorGUI();
+        }
+        // Model: swap back to the transform from before the last gizmo drag
+        if (selectedModel && modelPriorTransform) {
+            const current = {
+                position: selectedModel.position.clone(),
+                quaternion: selectedModel.quaternion.clone(),
+                scale: selectedModel.scale.clone()
+            };
+            selectedModel.position.copy(modelPriorTransform.position);
+            selectedModel.quaternion.copy(modelPriorTransform.quaternion);
+            selectedModel.scale.copy(modelPriorTransform.scale);
+            modelPriorTransform = current;
         }
     }
 
@@ -1968,6 +2316,8 @@ window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+    applyCaptureRenderScale();
 });
 
 // Movement update (WASD moves the target/pivot point)
@@ -2002,6 +2352,158 @@ function updateMovement(delta) {
     }
 }
 
+// Light colour & levels palette, photos and video recording (from gltFpsViewer)
+
+const palette = new Palette({
+    onLightChange: setLightColor,
+    onLevelsChange: setLevels
+});
+
+// The palette sets the room light (and its fixture's glow) rather than the background
+function setLightColor(hex) {
+    pointLight.color.set(hex);
+    lightFixtureMaterial.emissive.set(hex);
+}
+
+function setLevels(levels) {
+    levelsPass.uniforms['blackPoint'].value = levels.blackPoint;
+    levelsPass.uniforms['whitePoint'].value = levels.whitePoint;
+    levelsPass.uniforms['gamma'].value = levels.gamma;
+
+    // Neutral levels are a pass-through, so skip the composer and draw straight to the canvas
+    useComposer = levels.blackPoint !== 0 || levels.whitePoint !== 1 || levels.gamma !== 1;
+}
+
+function renderFrame() {
+    if (useComposer) composer.render();
+    else renderer.render(scene, camera);
+}
+
+// While a take is armed or running, render at the resolution the video is encoded
+// at instead of the display's full device pixel ratio: far fewer pixels are drawn,
+// and the recorder can capture the WebGL canvas directly instead of copying it.
+const MATCH_RENDER_SCALE_TO_CAPTURE = true;
+let currentPixelRatio = window.devicePixelRatio;
+
+const countdownEl = document.getElementById('countdown');
+const recIndicatorEl = document.getElementById('rec-indicator');
+const recTimeEl = document.getElementById('rec-time');
+const flashEl = document.getElementById('flash');
+let recTimeLabel = '';
+let photoRequested = false;
+
+const recorder = new Recorder(renderer.domElement, {
+    onStateChange: onRecorderStateChange
+});
+updateRecorderHud(recorder.state);
+
+function onRecorderStateChange(state) {
+    updateRecorderHud(state);
+    applyCaptureRenderScale();
+}
+
+function applyCaptureRenderScale() {
+    const capturing = MATCH_RENDER_SCALE_TO_CAPTURE && recorder.state !== 'idle';
+
+    const ratio = capturing
+        ? Math.min(window.devicePixelRatio,
+                   recorder.maxWidth / window.innerWidth,
+                   recorder.maxHeight / window.innerHeight)
+        : window.devicePixelRatio;
+
+    if (ratio === currentPixelRatio) return;
+    currentPixelRatio = ratio;
+
+    renderer.setPixelRatio(ratio);
+    composer.setPixelRatio(ratio);
+    composer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function updateRecorderHud(state) {
+    const countingDown = state === 'countdown';
+    const recording = state === 'recording';
+
+    countdownEl.style.display = countingDown ? 'block' : 'none';
+    recIndicatorEl.style.display = recording ? 'flex' : 'none';
+
+    if (countingDown) countdownEl.textContent = recorder.countdownRemaining;
+    if (recording) {
+        recTimeLabel = formatDuration(0);
+        recTimeEl.textContent = recTimeLabel;
+    }
+}
+
+function formatDuration(seconds) {
+    const total = Math.floor(seconds);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+// Hide everything that is editing UI rather than gallery content (selection
+// highlights, the model gizmo, resize markers, guides, light helpers) so photos
+// and recordings show only the gallery. Returns a function that puts it back.
+function hideViewerChrome() {
+    const hidden = [];
+    const hide = (object) => {
+        if (object && object.visible) {
+            object.visible = false;
+            hidden.push(object);
+        }
+    };
+
+    for (const frame of selectedFrames) {
+        frame.setSelected(false);
+        if (cornersHighlighted) frame.showCornerMarkers(false);
+    }
+    if (selectedProjector) selectedProjector.setSelected(false);
+    hide(transformControl);
+    hide(modelSelectionHelper);
+    hide(drawingLine);
+    alignmentLines.forEach(hide);
+    projectors.forEach(p => hide(p.helper));
+
+    return () => {
+        hidden.forEach(object => { object.visible = true; });
+        for (const frame of selectedFrames) {
+            frame.setSelected(true);
+            if (cornersHighlighted) frame.showCornerMarkers(true);
+        }
+        if (selectedProjector) selectedProjector.setSelected(true);
+    };
+}
+
+// Save the frame that was just rendered as a PNG. Must run straight after the
+// render: without preserveDrawingBuffer the canvas is only readable until the
+// browser composites it. The flash is DOM over the canvas, so it never reaches
+// the image (or a video being recorded at the same time).
+function takePhoto() {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    // toBlob copies the pixels synchronously; only the PNG encode is deferred
+    renderer.domElement.toBlob((blob) => {
+        if (!blob) {
+            console.error('Failed to capture photo');
+            return;
+        }
+        downloadBlob(blob, `photo_${timestamp}.png`);
+    }, 'image/png');
+
+    flashEl.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 500, easing: 'ease-out' });
+}
+
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.style.display = 'none';
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
 // Animation loop
 const clock = new THREE.Clock();
 
@@ -2016,7 +2518,34 @@ function animate() {
         projector.update(clock.elapsedTime);
     }
 
-    renderer.render(scene, camera);
+    // Follow the model through gizmo edits
+    if (modelSelectionHelper) modelSelectionHelper.update();
+
+    // A photo gets a frame of its own with the editing UI hidden. The normal
+    // render below then overwrites it, so nothing blinks off on screen.
+    if (photoRequested) {
+        photoRequested = false;
+        const restoreChrome = hideViewerChrome();
+        renderFrame();
+        takePhoto();
+        restoreChrome();
+    }
+
+    // Recordings never show the editing UI either; it is hidden for the render the
+    // recorder captures and restored straight after, so selection state is kept
+    const restoreChrome = recorder.isRecording() ? hideViewerChrome() : null;
+    renderFrame();
+    recorder.update();
+    if (restoreChrome) restoreChrome();
+
+    if (recorder.isRecording()) {
+        const elapsed = formatDuration(recorder.elapsedSeconds);
+        // Only touch the DOM when the displayed value actually changes
+        if (elapsed !== recTimeLabel) {
+            recTimeLabel = elapsed;
+            recTimeEl.textContent = elapsed;
+        }
+    }
 }
 
 animate();

@@ -8,12 +8,22 @@
 </head>
 <body>
     <div id="instructions">
-        WASD - Move | Q/E - Down/Up | Alt+Drag - Orbit | Shift+Alt+Drag - Pan | Scroll - Zoom
+        WASD - Move | Q/E - Down/Up | Alt+Drag - Orbit | Shift+Alt+Drag - Pan | Scroll - Zoom<br>
+        Drop .glb/.gltf - Add model | 1/2/3 - Move/Rotate/Scale model | Space - Photo | R - Record | C - Light &amp; Levels
     </div>
+
+    <div id="recorder-hud">
+        <div id="countdown"></div>
+        <div id="rec-indicator"><span id="rec-dot"></span>REC <span id="rec-time">0:00</span></div>
+    </div>
+
+    <div id="flash"></div>
+
     <script type="importmap">
         {
             "imports": {
                 "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
                 "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/dist/lil-gui.esm.min.js"
             }
         }
